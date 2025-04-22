@@ -1,0 +1,1 @@
+i am refactoring this file for more simplicity. i want a base objective function F(x,\xi), that can provide gradient and hessian over a stochastic batch, and a child class for linear model that implements this methods with torch automatic differentiation
