@@ -1,0 +1,21 @@
+optimizer: "USNA"
+optimizer_params:
+  lr_hess_exp: 0.75
+  lr_hess_const: 1.0
+  lr_hess_add_iter: 0.0
+  mask_size: 1
+  averaged_matrix: False
+  compute_hessian_param_avg: False
+  proj: True
+  # Base Optimizer parameters
+  lr_exp: 0.75
+  lr_const: 1.0
+  lr_add_iter: 0.0
+  averaged: True
+  # log_weight: 
+  # batch_size: 
+  batch_size_power: 0.0
+  # multiply_lr: 
+  # device: 
+  # other USNA specific parameters
+  # log_weight_matrix: 
