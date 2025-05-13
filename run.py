@@ -136,12 +136,10 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     optimizer_name = optimizer_config["optimizer"]
     model_params = problem_config.get("model_params")
     dataset_params = problem_config.get("dataset_params")
-    dataset_name = problem_config.get("dataset")  # Get dataset name for printing
-    model_name = problem_config.get("model")  # Get model name for printing
 
     # --- Setup: Data, Model, Initial Params ---
     torch.manual_seed(seed)
-    dataset, true_theta = generate_linear_regression(**dataset_params, device=device)
+    dataset, true_theta, true_hessian = generate_linear_regression(**dataset_params, device=device)
     model = LinearRegression(**model_params)
     theta_init = true_theta + radius * torch.randn_like(true_theta)
 
@@ -342,7 +340,7 @@ if __name__ == "__main__":
                 config=current_run_config,
                 group=group_name,
                 name=run_name,
-                mode="offline",
+                # mode="offline",
             )
 
             # Run the core experiment logic
@@ -370,51 +368,51 @@ if __name__ == "__main__":
     print(f"Runs skipped (already complete): {skipped_runs_count}")
     print(f"Runs completed successfully: {completed_runs_count}")
 
-    # --- Add Automatic Sync ---
-    def check_internet_connection(host="8.8.8.8", port=53, timeout=3):
-        """
-        Check for internet connection by trying to connect to a known host.
-        Host: 8.8.8.8 (Google DNS)
-        Port: 53/tcp (DNS)
-        """
-        try:
-            socket.setdefaulttimeout(timeout)
-            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
-            return True
-        except socket.error:
-            return False
+    # # --- Add Automatic Sync ---
+    # def check_internet_connection(host="8.8.8.8", port=53, timeout=3):
+    #     """
+    #     Check for internet connection by trying to connect to a known host.
+    #     Host: 8.8.8.8 (Google DNS)
+    #     Port: 53/tcp (DNS)
+    #     """
+    #     try:
+    #         socket.setdefaulttimeout(timeout)
+    #         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+    #         return True
+    #     except socket.error:
+    #         return False
 
-    print("\n--- Checking internet connection before attempting wandb sync... ---")
-    if check_internet_connection():
-        print("--- Internet connection detected. Attempting to sync offline runs to wandb... ---")
-        try:
-            # Using check=True will raise an exception if the command fails
-            print("wandb sync --sync-all")
-            result = subprocess.run(["wandb", "sync", "--sync-all"], check=True, capture_output=True, text=True)
-            print("--- wandb sync successful ---")
-            print(result.stdout)  # Optionally print the output from wandb sync
-            if result.stderr:
-                print("--- wandb sync stderr: ---")
-                print(result.stderr)
-        except FileNotFoundError:
-            print("!!! ERROR: 'wandb' command not found. Is wandb installed and in your PATH? Skipping sync. !!!")
-        except subprocess.CalledProcessError as e:
-            print(f"!!! ERROR: 'wandb sync --sync-all' failed with exit code {e.returncode} !!!")
-            print("--- stdout ---")
-            print(e.stdout)
-            print("--- stderr ---")
-            print(e.stderr)
-            print("!!! Please check the errors above. You may need to run 'wandb sync --sync-all' manually. !!!")
-        except Exception as e:
-            print(f"!!! An unexpected error occurred during wandb sync: {e} !!!")
-            print("!!! Skipping sync. You may need to run 'wandb sync --sync-all' manually. !!!")
-    else:
-        print("--- No internet connection detected. Skipping wandb sync. ---")
-        print("--- Please ensure you have an internet connection and run 'wandb sync --sync-all' manually later. ---")
-    # --- End Automatic Sync ---
+    # print("\n--- Checking internet connection before attempting wandb sync... ---")
+    # if check_internet_connection():
+    #     print("--- Internet connection detected. Attempting to sync offline runs to wandb... ---")
+    #     try:
+    #         # Using check=True will raise an exception if the command fails
+    #         print("wandb sync --sync-all")
+    #         result = subprocess.run(["wandb", "sync", "--sync-all"], check=True, capture_output=True, text=True)
+    #         print("--- wandb sync successful ---")
+    #         print(result.stdout)  # Optionally print the output from wandb sync
+    #         if result.stderr:
+    #             print("--- wandb sync stderr: ---")
+    #             print(result.stderr)
+    #     except FileNotFoundError:
+    #         print("!!! ERROR: 'wandb' command not found. Is wandb installed and in your PATH? Skipping sync. !!!")
+    #     except subprocess.CalledProcessError as e:
+    #         print(f"!!! ERROR: 'wandb sync --sync-all' failed with exit code {e.returncode} !!!")
+    #         print("--- stdout ---")
+    #         print(e.stdout)
+    #         print("--- stderr ---")
+    #         print(e.stderr)
+    #         print("!!! Please check the errors above. You may need to run 'wandb sync --sync-all' manually. !!!")
+    #     except Exception as e:
+    #         print(f"!!! An unexpected error occurred during wandb sync: {e} !!!")
+    #         print("!!! Skipping sync. You may need to run 'wandb sync --sync-all' manually. !!!")
+    # else:
+    #     print("--- No internet connection detected. Skipping wandb sync. ---")
+    #     print("--- Please ensure you have an internet connection and run 'wandb sync --sync-all' manually later. ---")
+    # # --- End Automatic Sync ---
 
-    print("\n--- Next Steps ---")
-    print("Go to the wandb project page:")
-    print("1. Use the 'Group' button/panel and group by 'wandb_group'.")
-    print("2. Select the group corresponding to your experiment.")
-    print("3. In the chart settings (pencil icon), enable 'Avg', 'StdDev', or 'Min/Max' aggregation.")
+    # print("\n--- Next Steps ---")
+    # print("Go to the wandb project page:")
+    # print("1. Use the 'Group' button/panel and group by 'wandb_group'.")
+    # print("2. Select the group corresponding to your experiment.")
+    # print("3. In the chart settings (pencil icon), enable 'Avg', 'StdDev', or 'Min/Max' aggregation.")

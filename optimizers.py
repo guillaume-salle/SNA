@@ -177,7 +177,6 @@ class USNA(BaseOptimizer):
         lr_hess_exp: float,
         lr_hess_const: float,
         lr_hess_add_iter: float,
-        mask_size: int,
         averaged_matrix: bool,
         compute_hessian_param_avg: bool,
         proj: bool,
@@ -193,6 +192,8 @@ class USNA(BaseOptimizer):
         device: str | None = None,
         # other USNA specific parameters
         log_weight_matrix: float = BaseOptimizer.DEFAULT_LOG_WEIGHT,
+        version: str = "mask",
+        mask_size: int = 1,
     ):
         # Initialize BaseOptimizer first to set up self.device, self.param etc.
         super().__init__(
@@ -217,12 +218,24 @@ class USNA(BaseOptimizer):
         self.log_weight_matrix = log_weight_matrix
         self.compute_hessian_param_avg = compute_hessian_param_avg
         self.proj = proj
+        self.version = version
 
         self.dim = self.param.shape[0]
         self.matrix = torch.eye(self.dim, device=self.device, dtype=self.param.dtype)
         self.matrix_not_avg = self.matrix.clone() if averaged_matrix else self.matrix
         if averaged_matrix:
             self.sum_weights_matrix = 0.0
+
+        if version == "mask":
+            self.update_hessian = self.update_hessian_mask
+        elif version == "spherical_vector" or version == "rademacher_vector":
+            self.update_hessian = self.update_hessian_vector
+        elif version == "full":
+            self.update_hessian = self.update_hessian_full
+        else:
+            raise ValueError(f"Invalid version: {version}")
+
+        self.log_metrics = {"skip_update": 0}
 
     def step(
         self,
@@ -248,14 +261,42 @@ class USNA(BaseOptimizer):
         if self.averaged:
             self.update_averaged_param()
 
-    def update_hessian(
+    def update_hessian_full(
+        self,
+        data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        """
+        Update the hessian estimate with the full hessian.
+        """
+        if self.compute_hessian_param_avg:
+            hessian = self.obj_function.hessian(data, self.param)
+            grad = self.obj_function.grad(data, self.param_not_averaged)
+        else:
+            grad, hessian = self.obj_function.grad_and_hessian(data, self.param_not_averaged)
+
+        lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add_iter)
+
+        if torch.linalg.norm(hessian, ord="fro") <= self.CONST_CONDITION / lr_hessian:
+            product = torch.matmul(self.matrix_not_avg, hessian)
+            self.matrix_not_avg += -lr_hessian * (product + product.T) + lr_hessian**2 * torch.matmul(hessian, product)
+            self.matrix_not_avg.diagonal() += 2 * lr_hessian
+        else:
+            self.log_metrics["skip_update"] += 1
+
+        return grad
+
+    def update_hessian_mask(
         self,
         data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
         """
         Update the hessian estimate with a canonic random vector using PyTorch, also returns grad.
+        The Hessian estimate H is replaced by H M with M a mask matrix with mask_size ones on the diagonal.
         """
-        # Generate masks
+        # Generate masks. The mask matrix should be multiplied by (dim/mask_size) so it averages to the identity matrix,
+        # but it leads to too much skipped updates. Hence we also divide the learning rate by (dim/mask_size) in theory,
+        # and in practice lr / (dim/mask_size) * (dim/mask_size) * mask_matrix = lr * mask_matrix.
+        # Remember to divide lr by (dim/mask_size) when adding identity.
         masks = torch.randint(low=0, high=self.dim, size=(self.mask_size,))
 
         # Compute grad in the NOT averaged param, and hessian column in the desired param
@@ -273,20 +314,61 @@ class USNA(BaseOptimizer):
 
             self.matrix_not_avg[:, masks] -= lr_hessian * product
             self.matrix_not_avg[masks, :] -= lr_hessian * product.T
-            self.matrix_not_avg.diagonal()[masks] += (lr_hessian**2) * torch.diag(
-                torch.matmul(hessian_columns.T, product)
-            )
+            self.matrix_not_avg[masks,masks] += (lr_hessian**2) * torch.matmul(hessian_columns.T, product)
             # faster version
             # self.matrix_not_avg[masks, :] = self.matrix_not_avg[:, masks]  # second addition of diagonal terms done next
-            # self.matrix_not_avg.diagonal()[masks] += (lr_hessian**2) * torch.matmul(
+            # self.matrix_not_avg[masks,masks] += (lr_hessian**2) * torch.matmul(
             #     hessian_columns.T, product
             # ) - lr_hessian * product[masks]
 
-            if self.proj:
+            # Add efficiently to the diagonal
+            if self.proj: # add 2 * lr * mask_matrix
                 self.matrix_not_avg.diagonal()[masks] += 2 * lr_hessian
-            else:
-                # Add efficiently to the diagonal
-                self.matrix_not_avg.diagonal().add_(2 * lr_hessian / self.dim)
+            else:  # add 2 * lr *Id, but lr should be lr / (dim / mask_size)
+                self.matrix_not_avg.diagonal() += 2 * lr_hessian / (self.dim/self.mask_size)
+        else:
+            self.log_metrics["skip_update"] += 1
+
+        return grad
+
+    def update_hessian_vector(
+        self,
+        data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        """
+        Update the hessian estimate with a product of the hessian and a vector using PyTorch.
+        Update: A_new = A_old - lr * (A_old * hess * v * v^T + v * v^T * hess^T * A_old)
+                        + lr^2 * v * v^T * hess.T * A_old * hess * v * v^T + 2 * lr * v * v^T
+                      = (I_d - lr * hess * v * v^T)^T @ A_old @ (I_d - lr * hess * v * v^T) + 2 * lr * v * v^T
+        """
+        if self.version == "spherical_vector":  # on the sphere of radius sqrt(d)
+            vector = torch.randn(self.dim, device=self.device, dtype=self.param.dtype)
+            vector = torch.sqrt(self.dim) * vector / torch.linalg.norm(vector)
+        elif self.version == "rademacher_vector":
+            vector = torch.randint(low=0, high=2, size=(self.dim,), device=self.device, dtype=self.param.dtype)
+            vector = 2 * vector - 1
+
+        if self.compute_hessian_param_avg:
+            hessian_vector = self.obj_function.hessian_vector(data, self.param, vector)
+            grad = self.obj_function.grad(data, self.param_not_averaged)
+        else:
+            grad, hessian_vector = self.obj_function.grad_and_hessian_vector(data, self.param_not_averaged, vector)
+
+        lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add_iter)
+
+        if torch.linalg.norm(hessian_vector, ord="fro") <= self.CONST_CONDITION / lr_hessian:
+            matrix_hessian_vector = torch.matmul(self.matrix_not_avg, hessian_vector)
+            outer_product = torch.outer(matrix_hessian_vector, vector)
+            self.matrix_not_avg -= lr_hessian * (outer_product + outer_product.T)
+            self.matrix_not_avg += lr_hessian**2 * torch.outer(vector, torch.matmul(hessian_vector.T, outer_product))
+
+            if self.proj:  # add 2 * lr * vector @ vector.T
+                self.matrix_not_avg.add_(2 * lr_hessian * torch.outer(vector, vector))
+            else:  # add 2 * lr * I_d
+                self.matrix_not_avg.diagonal() += 2 * lr_hessian
+        else:
+            self.log_metrics["skip_update"] += 1
+
         return grad
 
     def update_averaged_matrix(self) -> None:
