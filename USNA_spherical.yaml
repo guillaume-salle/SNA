@@ -18,5 +18,5 @@ optimizer_params:
   # device: 
   # other USNA specific parameters
   # log_weight_matrix: 
-  version: "mask"
-  mask_size: 1
+  version: "spherical_vector"
+  # mask_size: 

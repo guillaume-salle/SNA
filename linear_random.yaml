@@ -1,0 +1,13 @@
+dataset: linear_regression
+dataset_params:
+  n_dataset: 1e4
+  # true_theta: 
+  param_dim: 100
+  bias: &bias_setting True 
+  cov_type: "random" 
+  cov_const: 2.0
+  # diag:
+model: LinearRegression
+model_params:
+  bias: *bias_setting
+radius: 1.0

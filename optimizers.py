@@ -279,7 +279,7 @@ class USNA(BaseOptimizer):
         if torch.linalg.norm(hessian, ord="fro") <= self.CONST_CONDITION / lr_hessian:
             product = torch.matmul(self.matrix_not_avg, hessian)
             self.matrix_not_avg += -lr_hessian * (product + product.T) + lr_hessian**2 * torch.matmul(hessian, product)
-            self.matrix_not_avg.diagonal() += 2 * lr_hessian
+            self.matrix_not_avg.diagonal().add_(2 * lr_hessian)
         else:
             self.log_metrics["skip_update"] += 1
 
@@ -292,6 +292,7 @@ class USNA(BaseOptimizer):
         """
         Update the hessian estimate with a canonic random vector using PyTorch, also returns grad.
         The Hessian estimate H is replaced by H M with M a mask matrix with mask_size ones on the diagonal.
+        matrix_new = (I_d - lr *H M)^T A (I_d - lr *H M) + 2 * lr * M
         """
         # Generate masks. The mask matrix should be multiplied by (dim/mask_size) so it averages to the identity matrix,
         # but it leads to too much skipped updates. Hence we also divide the learning rate by (dim/mask_size) in theory,
@@ -314,18 +315,18 @@ class USNA(BaseOptimizer):
 
             self.matrix_not_avg[:, masks] -= lr_hessian * product
             self.matrix_not_avg[masks, :] -= lr_hessian * product.T
-            self.matrix_not_avg[masks,masks] += (lr_hessian**2) * torch.matmul(hessian_columns.T, product)
+            self.matrix_not_avg[masks[:, None], masks] += (lr_hessian**2) * torch.matmul(hessian_columns.T, product)
             # faster version
             # self.matrix_not_avg[masks, :] = self.matrix_not_avg[:, masks]  # second addition of diagonal terms done next
-            # self.matrix_not_avg[masks,masks] += (lr_hessian**2) * torch.matmul(
+            # self.matrix_not_avg[masks[:, None], masks] += (lr_hessian**2) * torch.matmul(
             #     hessian_columns.T, product
             # ) - lr_hessian * product[masks]
 
             # Add efficiently to the diagonal
-            if self.proj: # add 2 * lr * mask_matrix
+            if self.proj:  # add 2 * lr * mask_matrix
                 self.matrix_not_avg.diagonal()[masks] += 2 * lr_hessian
             else:  # add 2 * lr *Id, but lr should be lr / (dim / mask_size)
-                self.matrix_not_avg.diagonal() += 2 * lr_hessian / (self.dim/self.mask_size)
+                self.matrix_not_avg.diagonal().add_(2 * lr_hessian / (self.dim / self.mask_size))
         else:
             self.log_metrics["skip_update"] += 1
 
@@ -343,7 +344,7 @@ class USNA(BaseOptimizer):
         """
         if self.version == "spherical_vector":  # on the sphere of radius sqrt(d)
             vector = torch.randn(self.dim, device=self.device, dtype=self.param.dtype)
-            vector = torch.sqrt(self.dim) * vector / torch.linalg.norm(vector)
+            vector = math.sqrt(self.dim) * vector / torch.linalg.norm(vector)
         elif self.version == "rademacher_vector":
             vector = torch.randint(low=0, high=2, size=(self.dim,), device=self.device, dtype=self.param.dtype)
             vector = 2 * vector - 1
@@ -356,7 +357,7 @@ class USNA(BaseOptimizer):
 
         lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add_iter)
 
-        if torch.linalg.norm(hessian_vector, ord="fro") <= self.CONST_CONDITION / lr_hessian:
+        if torch.linalg.norm(hessian_vector) <= self.CONST_CONDITION / lr_hessian:
             matrix_hessian_vector = torch.matmul(self.matrix_not_avg, hessian_vector)
             outer_product = torch.outer(matrix_hessian_vector, vector)
             self.matrix_not_avg -= lr_hessian * (outer_product + outer_product.T)
@@ -365,7 +366,7 @@ class USNA(BaseOptimizer):
             if self.proj:  # add 2 * lr * vector @ vector.T
                 self.matrix_not_avg.add_(2 * lr_hessian * torch.outer(vector, vector))
             else:  # add 2 * lr * I_d
-                self.matrix_not_avg.diagonal() += 2 * lr_hessian
+                self.matrix_not_avg.diagonal().add_(2 * lr_hessian)
         else:
             self.log_metrics["skip_update"] += 1
 

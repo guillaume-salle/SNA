@@ -49,6 +49,20 @@ class BaseObjectiveFunction(ABC):
         """Compute the gradient and a specific column of the Hessian."""
         raise NotImplementedError
 
+    @abstractmethod
+    def hessian_vector(
+        self, data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor, vector: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute the Hessian-vector product."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def grad_and_hessian_vector(
+        self, data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor, vector: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute the gradient and the Hessian-vector product."""
+        raise NotImplementedError
+
 
 class LinearRegression(BaseObjectiveFunction):
     """
@@ -169,6 +183,91 @@ class LinearRegression(BaseObjectiveFunction):
         hessian = torch.matmul(phi.T, phi) / batch_size  # Shape (d+1, d+1)
 
         return grad, hessian
+
+    def hessian_vector(
+        self, data: Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor, vector: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute the Hessian-vector product (or a product with a matrix of k vectors) for linear regression.
+
+        For linear regression with mean squared error loss:
+        - The Hessian is H = (1/batch_size) * phi.T @ phi
+        - The product is H @ V = (1/batch_size) * phi.T @ (phi @ V)
+
+        Args:
+            data: Tuple of (X, y) where X is the feature matrix and y is the target vector.
+                  Note: y is not used for Hessian calculation in linear regression.
+            param: Current parameter vector (unused in linear regression as Hessian is constant).
+            vector (torch.Tensor): A 1D tensor of shape (param_dim,) or a 2D tensor of shape (param_dim, k)
+                                   representing one or k vectors to multiply with the Hessian.
+
+        Returns:
+            torch.Tensor: The Hessian-vector product. Shape will be (param_dim,) if input vector was 1D,
+                          or (param_dim, k) if input vector was 2D (param_dim, k).
+        """
+        X, _ = data
+        batch_size = X.size(0)
+        phi = self._add_bias(X)  # Shape (batch_size, param_dim)
+
+        squeeze_result = False
+        if vector.ndim == 1:
+            # Unsqueeze 1D vector to 2D (param_dim, 1) for consistent matrix multiplication
+            vector_2d = vector.unsqueeze(1)
+            squeeze_result = True
+        elif vector.ndim == 2:
+            vector_2d = vector
+        else:
+            raise ValueError(
+                f"Unsupported vector shape: {vector.shape}. Expected 1D (param_dim,) or 2D (param_dim, k)."
+            )
+
+        # vector_2d is now (param_dim, k) where k can be 1
+        # phi @ vector_2d results in (batch_size, k)
+        phi_v = torch.matmul(phi, vector_2d)
+        # phi.T @ phi_v results in (param_dim, k)
+        hessian_vector_product = torch.matmul(phi.T, phi_v) / batch_size
+
+        if squeeze_result:
+            return hessian_vector_product.squeeze(1)  # Squeeze back to 1D if input was 1D
+        else:
+            return hessian_vector_product
+
+    def grad_and_hessian_vector(
+        self, data: Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor, vector: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute the gradient and the Hessian-vector product(s) for linear regression,
+        optimizing by computing phi only once.
+        """
+        X, y = data
+        batch_size = X.size(0)
+        phi = self._add_bias(X)  # Compute phi ONCE
+
+        # Gradient calculation (uses phi)
+        Y_pred = torch.matmul(phi, param)
+        error = Y_pred - y
+        grad = torch.matmul(phi.T, error) / batch_size
+
+        # Hessian-vector product calculation (uses phi)
+        squeeze_result = False
+        if vector.ndim == 1:
+            vector_2d = vector.unsqueeze(1)
+            squeeze_result = True
+        elif vector.ndim == 2:
+            vector_2d = vector
+        else:
+            raise ValueError(
+                f"Unsupported vector shape: {vector.shape}. Expected 1D (param_dim,) or 2D (param_dim, k)."
+            )
+
+        # vector_2d is (param_dim, k)
+        phi_v = torch.matmul(phi, vector_2d)  # phi @ V -> (batch_size, k)
+        hess_vec_prod = torch.matmul(phi.T, phi_v) / batch_size  # phi.T @ (phi @ V) -> (param_dim, k)
+
+        if squeeze_result:
+            hess_vec_prod = hess_vec_prod.squeeze(1)  # Squeeze back to (param_dim,) if input was 1D
+
+        return grad, hess_vec_prod
 
     def sherman_morrison(
         self, data: Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor, n_iter: int = None

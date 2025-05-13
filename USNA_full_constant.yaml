@@ -1,6 +1,6 @@
 optimizer: "USNA"
 optimizer_params:
-  lr_hess_exp: 0.75
+  lr_hess_exp: 0.0
   lr_hess_const: 1.0
   lr_hess_add_iter: 0.0
   averaged_matrix: False
@@ -18,5 +18,5 @@ optimizer_params:
   # device: 
   # other USNA specific parameters
   # log_weight_matrix: 
-  version: "mask"
-  mask_size: 1
+  version: "full"
+  # mask_size: 

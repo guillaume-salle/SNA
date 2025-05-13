@@ -7,6 +7,9 @@ import yaml
 import traceback
 import hashlib
 import socket
+import math
+import sys
+from tqdm import tqdm
 
 import torch
 from torch.utils.data import DataLoader
@@ -139,7 +142,11 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
 
     # --- Setup: Data, Model, Initial Params ---
     torch.manual_seed(seed)
-    dataset, true_theta, true_hessian = generate_linear_regression(**dataset_params, device=device)
+    data_gen_batch_size = optimizer_params["batch_size"]
+    # Assuming generate_linear_regression returns: dataset, true_theta, true_hessian
+    dataset, true_theta, true_hessian = generate_linear_regression(
+        **dataset_params, device=device, data_batch_size=data_gen_batch_size
+    )
     model = LinearRegression(**model_params)
     theta_init = true_theta + radius * torch.randn_like(true_theta)
 
@@ -147,44 +154,109 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     optimizer_class = get_optimizer_class(optimizer_name)
     optimizer = optimizer_class(param=theta_init, obj_function=model, **optimizer_params)
 
-    # --- Training Loop ---
+    # --- Initial State Logging (before any optimizer steps) ---
+    log_data_initial = {
+        "samples": 1,  # Start samples at 1 for log scale compatibility
+        "estimation_error": torch.linalg.vector_norm(theta_init - true_theta).item() ** 2,
+        # Initial timing metrics for the first point
+        "time": 0.0,
+        "optimizer_step_duration": 0.0,
+        "optimizer_time_cumulative": 0.0,
+    }
+    compute_inv_hess_error = True if true_hessian is not None and hasattr(optimizer, "matrix") else False
+    if compute_inv_hess_error:
+        true_inv_hessian = torch.linalg.inv(true_hessian)
+        inv_hess_error_initial = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
+        log_data_initial["inv_hess_error"] = inv_hess_error_initial
+    wandb.log(log_data_initial)
+
+    # --- Training Loop (No separate warm-up phase) ---
     dataloader = DataLoader(
         dataset,
-        batch_size=optimizer.batch_size,
+        batch_size=None,
         shuffle=False,
         pin_memory=(device == "cuda"),
     )
-    n_samples_processed = 0
-    start_time = time.time()
-    initial_error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
-    wandb.log({"samples": n_samples_processed, "estimation_error": initial_error, "time": 0.0})
-    print(f"   Starting optimization loop...")
-    for step, data in enumerate(dataloader):
-        if isinstance(data, (list, tuple)):
-            X, y = data
-            X, y = X.to(device), y.to(device)
-            data = (X, y)
-            current_batch_size = X.size(0)
-        else:
-            data = data.to(device)
-            current_batch_size = data.size(0)
-        optimizer.step(data)
-        current_time = time.time()
-        error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
-        n_samples_processed += current_batch_size
-        log_data = {
-            "samples": n_samples_processed,
-            "estimation_error": error,
-            "time": current_time - start_time,
-        }
-        wandb.log(log_data)
 
-    # --- Final Logging ---
-    final_time = time.time() - start_time
-    print(f"   Finished optimization loop. Total time: {final_time:.2f}s")
+    data_iterator = iter(dataloader)
+    cumulative_optimizer_samples = 0  # Starts from 0, first step will process samples
+
+    # total_batches_in_dataset is needed for tqdm if used
+    total_batches_in_dataset = math.ceil(dataset.n_total_samples / dataset.data_batch_size)
+    print(f"   Starting optimization loop for {total_batches_in_dataset} steps...")
+
+    # Start timers for the main timed loop
+    start_time = time.time()  # Overall wall-clock start time for the loop
+    optimizer_time_cumulative = 0.0  # Cumulative time for optimizer.step() only
+
+    progress_bar_iterator = tqdm(
+        data_iterator, total=total_batches_in_dataset, desc="   Optimization", unit="batch", leave=True
+    )
+
+    for step, data_batch in enumerate(progress_bar_iterator):
+        X, y = data_batch
+        current_batch_size = X.size(0)
+
+        current_step_duration: float
+        if device == "cuda":
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            optimizer.step((X, y))
+            end_event.record()
+            torch.cuda.synchronize()
+            current_step_duration = start_event.elapsed_time(end_event) / 1000.0
+        else:  # CPU
+            step_start_cpu_time = time.perf_counter()
+            optimizer.step((X, y))
+            step_end_cpu_time = time.perf_counter()
+            current_step_duration = step_end_cpu_time - step_start_cpu_time
+
+        optimizer_time_cumulative += current_step_duration
+        cumulative_optimizer_samples += current_batch_size  # samples processed in this step
+
+        loop_iteration_wall_time = time.time() - start_time
+        error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
+
+        log_data_step = {
+            "samples": 1 + cumulative_optimizer_samples,  # samples are 1 + (total processed by optimizer)
+            "estimation_error": error,
+            "time": loop_iteration_wall_time,
+            "optimizer_step_duration": current_step_duration,
+            "optimizer_time_cumulative": optimizer_time_cumulative,
+        }
+        if compute_inv_hess_error and hasattr(optimizer, "matrix"):
+            inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
+            log_data_step["inv_hess_error"] = inv_hess_error
+        wandb.log(log_data_step)
+
+    final_wall_time = time.time() - start_time
+    print(f"\n   Finished optimization loop. Total wall time: {final_wall_time:.2f}s")
+    print(f"   Total optimizer step time: {optimizer_time_cumulative:.4f}s")
     final_error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
     print(f"   Final estimation error: {final_error:.4f}")
-    wandb.log({"time": final_time, "estimation_error": final_error})
+
+    average_optimizer_time_per_sample = 0.0
+    if cumulative_optimizer_samples > 0:
+        average_optimizer_time_per_sample = optimizer_time_cumulative / cumulative_optimizer_samples
+
+    log_data_final = {
+        "samples": 1 + cumulative_optimizer_samples,  # Use final cumulative samples
+        "estimation_error": final_error,
+        "time": final_wall_time,
+        "optimizer_time_cumulative": optimizer_time_cumulative,
+        "average_optimizer_time_per_sample": average_optimizer_time_per_sample,
+    }
+
+    # Log optimizer-specific metrics if they exist
+    if hasattr(optimizer, "log_metrics") and isinstance(optimizer.log_metrics, dict):
+        for key, value in optimizer.log_metrics.items():
+            log_data_final[f"opt_metric_{key}"] = value
+
+    if compute_inv_hess_error and hasattr(optimizer, "matrix"):
+        final_inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
+        log_data_final["inv_hess_error"] = final_inv_hess_error
+    wandb.log(log_data_final)
 
 
 # ============================================================================ #
@@ -274,12 +346,44 @@ if __name__ == "__main__":
     # Check for device in optimizer config and set default if missing
     if "optimizer_params" not in optimizer_config:
         raise ValueError("optimizer_params not found in optimizer config")
-    if "device" not in optimizer_config["optimizer_params"]:
+    optimizer_params = optimizer_config["optimizer_params"]  # Alias for convenience
+
+    if "device" not in optimizer_params:
         default_device = "cuda" if torch.cuda.is_available() else "cpu"
-        optimizer_config["optimizer_params"]["device"] = default_device
+        optimizer_params["device"] = default_device
         print(f"Device not specified in optimizer config, using default: {default_device}")
 
-    # --- Validate N_runs ---
+    # --- Determine param_dim for batch_size defaulting (if needed) ---
+    # This needs to be determined before batch_size defaulting that might use it.
+    param_dim_for_config: int
+    dataset_params_alias = problem_config.get("dataset_params", {})
+    if dataset_params_alias.get("true_theta") is not None:
+        param_dim_for_config = len(dataset_params_alias["true_theta"])
+    elif dataset_params_alias.get("param_dim") is not None:
+        param_dim_for_config = int(dataset_params_alias["param_dim"])
+    else:
+        raise ValueError(
+            "Cannot determine param_dim from problem_config for batch_size setup. "
+            "Please provide 'true_theta' or 'param_dim' in dataset_params."
+        )
+
+    # --- Set or default batch_size in optimizer_config["optimizer_params"] and ensure it's an int ---
+    if optimizer_params.get("batch_size") is None:
+        batch_size_power = optimizer_params.get("batch_size_power", BaseOptimizer.DEFAULT_BATCH_SIZE_POWER)
+        calculated_batch_size = int(param_dim_for_config**batch_size_power)
+        optimizer_params["batch_size"] = calculated_batch_size
+        print(f"Calculated batch_size: {calculated_batch_size} for param dim: {param_dim_for_config}")
+    else:
+        # If batch_size is provided, ensure it's an integer
+        # Convert to float first to handle scientific notation (e.g., 1e4) from YAML
+        try:
+            optimizer_params["batch_size"] = int(float(optimizer_params["batch_size"]))
+        except ValueError:
+            raise ValueError(
+                f"Invalid batch_size in optimizer_config: {optimizer_params['batch_size']}. Must be a number convertible to int."
+            )
+
+    # --- Validate N_runs --- (Moved before config hashing for consistency)
     requested_runs = args.N_runs
     max_runs = 100
     N_runs = max(1, min(requested_runs, max_runs))  # Clamp between 1 and max_runs
@@ -294,13 +398,22 @@ if __name__ == "__main__":
 
     # Calculate Project/Group names once
     problem_hash = hashlib.md5(config_to_stable_string(problem_config).encode()).hexdigest()[:8]
-    project_name = f"{problem_config.get('dataset', 'unknown_dataset')}-{problem_hash}"
-    optimizer_hash = hashlib.md5(config_to_stable_string(optimizer_config).encode()).hexdigest()[:8]
-    group_name = f"{optimizer_config.get('optimizer', 'unknown_opt')}-{optimizer_hash}"
+    project_name = f"{problem_config.get('dataset')}-{problem_hash}"
+    optimizer_hash = hashlib.md5(config_to_stable_string(optimizer_config).encode()).hexdigest()[:6]
+    group_name = (
+        ("A " if optimizer_config.get("optimizer_params", {}).get("averaged", False) else "")
+        + f"{optimizer_config.get('optimizer')}"
+        + (
+            f"-{optimizer_config.get('optimizer_params', {}).get('version', '')}"
+            if "version" in optimizer_config.get("optimizer_params", {})
+            else ""
+        )
+        + f"-{optimizer_hash}"
+    )
 
     print(f"Project Name: {project_name}")
     print(f"Group Name: {group_name}")
-    print(f"Device to be used: {optimizer_config['optimizer_params']['device']}")
+    print(f"Device to be used: {optimizer_params['device']}")
     print(f"Number of runs (seeds): {N_runs}")
     # Print dataset size (for generated dataset)
     if "dataset_params" in problem_config and "n_dataset" in problem_config["dataset_params"]:
@@ -340,7 +453,7 @@ if __name__ == "__main__":
                 config=current_run_config,
                 group=group_name,
                 name=run_name,
-                # mode="offline",
+                mode="online",
             )
 
             # Run the core experiment logic
