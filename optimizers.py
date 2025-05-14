@@ -341,6 +341,7 @@ class USNA(BaseOptimizer):
         Update: A_new = A_old - lr * (A_old * hess * v * v^T + v * v^T * hess^T * A_old)
                         + lr^2 * v * v^T * hess.T * A_old * hess * v * v^T + 2 * lr * v * v^T
                       = (I_d - lr * hess * v * v^T)^T @ A_old @ (I_d - lr * hess * v * v^T) + 2 * lr * v * v^T
+                The vector v must satisfy E[v v^T] = I_d.
         """
         if self.version == "spherical_vector":  # on the sphere of radius sqrt(d)
             vector = torch.randn(self.dim, device=self.device, dtype=self.param.dtype)
@@ -357,14 +358,14 @@ class USNA(BaseOptimizer):
 
         lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add_iter)
 
-        if torch.linalg.norm(hessian_vector) <= self.CONST_CONDITION / lr_hessian:
+        if torch.linalg.norm(hessian_vector) * torch.linalg.norm(vector) <= self.CONST_CONDITION / lr_hessian:
             matrix_hessian_vector = torch.matmul(self.matrix_not_avg, hessian_vector)
             outer_product = torch.outer(matrix_hessian_vector, vector)
             self.matrix_not_avg -= lr_hessian * (outer_product + outer_product.T)
             self.matrix_not_avg += lr_hessian**2 * torch.outer(vector, torch.matmul(hessian_vector, outer_product))
 
             if self.proj:  # add 2 * lr * vector @ vector.T
-                self.matrix_not_avg.add_(2 * lr_hessian * torch.outer(vector, vector))
+                self.matrix_not_avg += 2 * lr_hessian * torch.outer(vector, vector)
             else:  # add 2 * lr * I_d
                 self.matrix_not_avg.diagonal().add_(2 * lr_hessian)
         else:

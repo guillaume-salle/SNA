@@ -204,8 +204,11 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     compute_inv_hess_error = True if true_hessian is not None and hasattr(optimizer, "matrix") else False
     if compute_inv_hess_error:
         true_inv_hessian = torch.linalg.inv(true_hessian)
-        inv_hess_error_initial = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
-        log_data_initial["inv_hess_error"] = inv_hess_error_initial
+        inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
+        # compute also operator norm of the error
+        inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
+        log_data_initial["inv_hess_error"] = inv_hess_error
+        log_data_initial["inv_hess_error_operator"] = inv_hess_error_operator
     wandb.log(log_data_initial)
 
     # --- Training Loop (No separate warm-up phase) ---
@@ -265,7 +268,9 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         }
         if compute_inv_hess_error and hasattr(optimizer, "matrix"):
             inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
+            inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
             log_data_step["inv_hess_error"] = inv_hess_error
+            log_data_step["inv_hess_error_operator"] = inv_hess_error_operator
         wandb.log(log_data_step)
 
     final_wall_time = time.time() - start_time
@@ -293,7 +298,9 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
 
     if compute_inv_hess_error and hasattr(optimizer, "matrix"):
         final_inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
+        final_inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
         log_data_final["inv_hess_error"] = final_inv_hess_error
+        log_data_final["inv_hess_error_operator"] = final_inv_hess_error_operator
     wandb.log(log_data_final)
 
 
@@ -336,6 +343,8 @@ def sanitize_name(name):
 
 # Define the subdirectory where optimizer YAML configurations are stored
 OPTIMIZER_CONFIGS_DIR = "configs/optimizers/"
+# Define the subdirectory where problem YAML configurations are stored
+PROBLEM_CONFIGS_DIR = "configs/problem/"
 
 if __name__ == "__main__":
     # --- Argument Parsing ---
@@ -345,14 +354,14 @@ if __name__ == "__main__":
         "--config",
         type=str,
         required=True,
-        help="Path to the YAML configuration file for the problem definition (dataset, model, radius).",
+        help="Name or path of the YAML configuration file for the problem definition. If a name, assumed to be in PROBLEM_CONFIGS_DIR.",
     )
     parser.add_argument(
         "-o",
         "--optimizer",
         type=str,
         required=True,
-        nargs="+",  # Restore: Accept one or more optimizer config files/relative paths
+        nargs="+",  # Accept one or more optimizer config files/relative paths
         help="Name(s) of the YAML configuration file(s) for the optimizer(s), located in the predefined optimizer configs directory.",
     )
     parser.add_argument(
@@ -372,16 +381,20 @@ if __name__ == "__main__":
     def load_config(config_path, _load_chain=None):
         if _load_chain is None:
             _load_chain = set()
-        if config_path in _load_chain:
-            raise ValueError(f"Circular inheritance detected: {config_path} already in load chain: {_load_chain}")
+        # Use os.path.normpath and os.path.abspath to get a canonical path for _load_chain
+        # to prevent issues with slightly different relative path strings referring to the same file.
+        normalized_config_path = os.path.normpath(os.path.abspath(config_path))
+        if normalized_config_path in _load_chain:
+            raise ValueError(
+                f"Circular inheritance detected: {normalized_config_path} already in load chain: {_load_chain}"
+            )
 
-        _load_chain.add(config_path)
+        _load_chain.add(normalized_config_path)
 
         try:
             with open(config_path, "r") as f:
                 current_config = yaml.safe_load(f)
             if not isinstance(current_config, dict):
-                # Handle empty YAML or non-dict content gracefully, or raise error
                 print(f"Warning: Config file {config_path} is empty or not a dictionary. Returning empty config.")
                 current_config = {}
 
@@ -390,43 +403,70 @@ if __name__ == "__main__":
             parent_config_filename = current_config.pop("inherits_from", None)
 
             if parent_config_filename:
-                # Resolve parent config path
                 actual_parent_filename = parent_config_filename
                 if not (actual_parent_filename.endswith(".yaml") or actual_parent_filename.endswith(".yml")):
                     actual_parent_filename += ".yaml"
 
-                parent_config_path = os.path.join(OPTIMIZER_CONFIGS_DIR, actual_parent_filename)
+                # Resolve parent path relative to the directory of the current config file
+                current_config_dir = os.path.dirname(config_path)
+                parent_config_path = os.path.join(current_config_dir, actual_parent_filename)
 
                 print(f"  File {config_path} inherits from {parent_config_filename} (resolved to {parent_config_path})")
-                base_config = load_config(
-                    parent_config_path, _load_chain=_load_chain.copy()
-                )  # Pass a copy of the chain
+                base_config = load_config(parent_config_path, _load_chain=_load_chain.copy())
 
-                # Deep merge current_config (child) into base_config (parent)
-                # The `current_config` at this point only contains overrides/additions
-                final_config = deep_merge(current_config, base_config)  # child specifics override base
-                _load_chain.remove(config_path)  # Remove from chain after successful load and merge
+                final_config = deep_merge(current_config, base_config)
+                _load_chain.remove(normalized_config_path)
                 return final_config
             else:
-                _load_chain.remove(config_path)  # Remove from chain after successful load
+                _load_chain.remove(normalized_config_path)
                 return current_config
 
         except FileNotFoundError:
             print(f"!!! ERROR: Configuration file not found at {config_path}. Exiting. !!!")
-            _load_chain.remove(config_path)  # Ensure removal on error too
+            _load_chain.remove(normalized_config_path)
             exit(1)
         except yaml.YAMLError as e:
             print(f"!!! ERROR: Failed to parse configuration file {config_path}: {e}. Exiting. !!!")
-            _load_chain.remove(config_path)
+            _load_chain.remove(normalized_config_path)
             exit(1)
         except Exception as e:
             print(f"!!! ERROR: An unexpected error occurred loading config {config_path}: {e}. Exiting. !!!")
-            _load_chain.remove(config_path)
+            # Ensure removal even if normalized_config_path itself was problematic, though less likely here.
+            if normalized_config_path in _load_chain:
+                _load_chain.remove(normalized_config_path)
             exit(1)
 
-    problem_config = load_config(args.config)
-    # Note: args.optimizer is now a list of paths
-    optimizer_config_paths = args.optimizer
+    # --- Resolve and load the main problem configuration ---
+    problem_config_argument = args.config
+    problem_config_filename_base_for_logging = os.path.splitext(os.path.basename(problem_config_argument))[0]
+
+    candidate_problem_path = problem_config_argument
+    if not (candidate_problem_path.endswith(".yaml") or candidate_problem_path.endswith(".yml")):
+        candidate_problem_path += ".yaml"
+
+    if os.path.isfile(candidate_problem_path):
+        actual_problem_config_filepath = candidate_problem_path
+    else:
+        filename_component = os.path.basename(problem_config_argument)  # Use basename of original arg for dir lookup
+        if not (filename_component.endswith(".yaml") or filename_component.endswith(".yml")):
+            filename_component += ".yaml"
+        actual_problem_config_filepath = os.path.join(PROBLEM_CONFIGS_DIR, filename_component)
+
+    print(
+        f"Attempting to load problem configuration: '{problem_config_argument}' (resolved to: '{actual_problem_config_filepath}')"
+    )
+    problem_config = load_config(actual_problem_config_filepath)
+
+    # --- Hash and project name are derived from the loaded problem_config and its resolved path ---
+    # Note: project_name uses the original argument's basename for user-friendliness if desired,
+    # or could use the basename of actual_problem_config_filepath.
+    # For consistency in hashing the content, actual_problem_config_filepath should be what matters for content hash.
+    # The problem_config_filename_base_for_logging is for the human-readable part of the project name.
+
+    problem_content_stable_string = config_to_stable_string(problem_config)  # Hash the actual loaded content
+    problem_hash = hashlib.md5(problem_content_stable_string.encode()).hexdigest()[:8]
+    # Use problem_config_filename_base_for_logging for the friendly name part
+    project_name = f"{problem_config_filename_base_for_logging}-{problem_hash}"
 
     # --- Validate N_runs ---
     requested_runs = args.N_runs
@@ -437,9 +477,6 @@ if __name__ == "__main__":
 
     # --- Instantiate Completion Manager (once) ---
     completion_manager = RunCompletionManager()
-
-    problem_hash = hashlib.md5(config_to_stable_string(problem_config).encode()).hexdigest()[:8]
-    project_name = f"{problem_config.get('dataset', 'unknown_dataset')}-{problem_hash}"
 
     # --- Determine param_dim for batch_size defaulting (if needed) ---
     param_dim_for_config: int
@@ -466,46 +503,37 @@ if __name__ == "__main__":
     # --- Loop over each optimizer configuration argument ---
     for optimizer_file_argument in optimizer_config_file_args:
 
-        # Derive the base name for logging/wandb names from the original argument
-        # E.g., "configs/optimizers/SGD.yaml" -> "SGD"; "SGD" -> "SGD"
         optimizer_config_filename_base = os.path.splitext(os.path.basename(optimizer_file_argument))[0]
 
-        # Determine the actual file path to load, ensuring it has an extension
-        candidate_filepath = optimizer_file_argument
-        if not (candidate_filepath.endswith(".yaml") or candidate_filepath.endswith(".yml")):
-            candidate_filepath += ".yaml"
-            # If shell provides configs/optimizers/SGD (no ext), candidate_filepath is configs/optimizers/SGD.yaml
-            # If user provides SGD, candidate_filepath is SGD.yaml
+        candidate_optimizer_path = optimizer_file_argument
+        if not (candidate_optimizer_path.endswith(".yaml") or candidate_optimizer_path.endswith(".yml")):
+            candidate_optimizer_path += ".yaml"
 
-        if os.path.isfile(candidate_filepath):
-            # If the argument (plus .yaml if needed) is a direct path to a file, use it.
-            # This handles shell globbing like "configs/optimizers/*.yaml"
-            # or if user types "SGD.yaml" and it's in CWD.
-            optimizer_config_filepath = candidate_filepath
+        if os.path.isfile(candidate_optimizer_path):
+            actual_optimizer_config_filepath = candidate_optimizer_path
         else:
-            # Otherwise, assume the (basename of the) argument is relative to OPTIMIZER_CONFIGS_DIR.
-            # Take the basename of the original argument, ensure it has an extension, then join.
             filename_component = os.path.basename(optimizer_file_argument)
             if not (filename_component.endswith(".yaml") or filename_component.endswith(".yml")):
                 filename_component += ".yaml"
-            optimizer_config_filepath = os.path.join(OPTIMIZER_CONFIGS_DIR, filename_component)
+            actual_optimizer_config_filepath = os.path.join(OPTIMIZER_CONFIGS_DIR, filename_component)
 
         print(f"\n============================================================================")
         print(
-            f"Processing Optimizer Argument: '{optimizer_file_argument}' (using base name: '{optimizer_config_filename_base}', resolved to load: '{optimizer_config_filepath}')"
+            f"Processing Optimizer Argument: '{optimizer_file_argument}' (using base name: '{optimizer_config_filename_base}', resolved to load: '{actual_optimizer_config_filepath}')"
         )
         print(f"============================================================================\n")
-        optimizer_config = load_config(optimizer_config_filepath)
+        # Use the same load_config for optimizers; it now handles relative inheritance correctly
+        optimizer_config = load_config(actual_optimizer_config_filepath)
 
         # --- Per-Optimizer Config Setup ---
         if "optimizer_params" not in optimizer_config:
-            raise ValueError(f"optimizer_params not found in optimizer config: {optimizer_config_filepath}")
+            raise ValueError(f"optimizer_params not found in optimizer config: {actual_optimizer_config_filepath}")
         optimizer_params = optimizer_config["optimizer_params"]
 
         if "device" not in optimizer_params:
             default_device = "cuda" if torch.cuda.is_available() else "cpu"
             optimizer_params["device"] = default_device
-            print(f"Device not specified in {optimizer_config_filepath}, using default: {default_device}")
+            print(f"Device not specified in {actual_optimizer_config_filepath}, using default: {default_device}")
 
         # --- Set or default batch_size in optimizer_config["optimizer_params"] and ensure it's an int ---
         if optimizer_params.get("batch_size") is None:
@@ -518,7 +546,7 @@ if __name__ == "__main__":
                 optimizer_params["batch_size"] = int(float(optimizer_params["batch_size"]))
             except ValueError:
                 raise ValueError(
-                    f"Invalid batch_size in {optimizer_config_filepath}: {optimizer_params['batch_size']}. Must be a number convertible to int."
+                    f"Invalid batch_size in {actual_optimizer_config_filepath}: {optimizer_params['batch_size']}. Must be a number convertible to int."
                 )
 
         # --- Pre-Run Setup (per optimizer config) ---
@@ -542,7 +570,7 @@ if __name__ == "__main__":
         for seed in range(N_runs):
             current_run_config = merged_config.copy()
             current_run_config["seed"] = seed
-            run_name = f"{optimizer_config_filename_base}-{run_identifier}_seed{seed}"
+            run_name = f"{optimizer_config_filename_base}-{run_identifier}_{seed}"
 
             print(
                 f"\n--- Seed {seed}/{N_runs-1}: Checking run {run_name} for optimizer {optimizer_config_filename_base} ---"

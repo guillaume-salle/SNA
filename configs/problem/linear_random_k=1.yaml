@@ -4,8 +4,8 @@ dataset_params:
   # true_theta: 
   param_dim: 100
   bias: &bias_setting True 
-  cov_type: "random" 
-  cov_const: 2.0
+  cov_type: random
+  cov_const: 1.0
   # diag:
 model: LinearRegression
 model_params:
