@@ -241,9 +241,9 @@ Experiments are automatically logged to Weights & Biases if WandB is configured 
 *   **Group Name**: Generated as `"{optimizer_config_filename_base}-{optimizer_hash}"`.
     *   `optimizer_config_filename_base` is the name of the optimizer config file (e.g., "SGD", "USNA_spherical").
     *   `optimizer_hash` is an MD5 hash of the sorted optimizer configuration string.
-*   **Run Name**: Generated as `"{optimizer_config_filename_base}-{run_identifier}_seed{X}"`.
+*   **Run Name**: Generated as `"{optimizer_config_filename_base}-{run_identifier}_{X}"`.
     *   `run_identifier` is an MD5 hash of the merged (problem + current optimizer) configuration string (first 6 characters).
-    *   `seedX` is the current seed number.
+    *   `X` is the current seed number.
 
 **Viewing Results:**
 On the WandB project page:
@@ -287,7 +287,3 @@ On the WandB project page:
 2.  **Datasets**:
     *   Implement your new dataset generation logic in `datasets.py`. This might involve creating a new `Dataset` or `IterableDataset` subclass.
     *   Update the `run_experiment` function in `run.py` to call your new data generation function based on parameters in the problem configuration.
-
----
-
-This README should provide a good starting point for users of your framework. Remember to replace placeholders like `<your-repo-url>` and especially advise users to change the hardcoded WandB entity. 
