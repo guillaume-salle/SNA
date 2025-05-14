@@ -10,6 +10,7 @@ import socket
 import math
 import sys
 from tqdm import tqdm
+import collections.abc  # For deep_merge
 
 import torch
 from torch.utils.data import DataLoader
@@ -17,6 +18,27 @@ from torch.utils.data import DataLoader
 from objective_functions import LinearRegression
 from optimizers import SGD, USNA, BaseOptimizer
 from datasets import generate_linear_regression
+
+
+# ============================================================================ #
+# >>> Configuration Utilities <<<                                              #
+# ============================================================================ #
+
+
+def deep_merge(source: dict, destination: dict) -> dict:
+    """
+    Deeply merges source dict into destination dict.
+    Keys in source override keys in destination.
+    Nested dictionaries are merged recursively.
+    """
+    for key, value in source.items():
+        if isinstance(value, collections.abc.Mapping):
+            # Get node or create one if it doesn't exist
+            node = destination.setdefault(key, {})
+            deep_merge(value, node)
+        else:
+            destination[key] = value
+    return destination
 
 
 # ============================================================================ #
@@ -148,7 +170,23 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         **dataset_params, device=device, data_batch_size=data_gen_batch_size
     )
     model = LinearRegression(**model_params)
-    theta_init = true_theta + radius * torch.randn_like(true_theta)
+
+    # Generate a random direction for the initial offset
+    random_direction = torch.randn_like(true_theta)
+    norm_of_random_direction = torch.linalg.vector_norm(random_direction)
+
+    # Normalize the random direction to have unit norm
+    # If norm_of_random_direction is 0 (e.g., if true_theta is an empty tensor for param_dim=0,
+    # or in the extremely rare case randn_like produces a zero vector for non-empty true_theta),
+    # the unit_direction will also be a zero vector (or empty tensor).
+    # In such cases, theta_init will be equal to true_theta.
+    if norm_of_random_direction == 0:
+        unit_direction = random_direction  # This is already a zero vector or an empty tensor
+    else:
+        unit_direction = random_direction / norm_of_random_direction
+
+    # Initialize theta_init on a sphere of 'radius' around true_theta
+    theta_init = true_theta + radius * unit_direction
 
     # --- Setup: Optimizer ---
     optimizer_class = get_optimizer_class(optimizer_name)
@@ -296,6 +334,9 @@ def sanitize_name(name):
     )
 
 
+# Define the subdirectory where optimizer YAML configurations are stored
+OPTIMIZER_CONFIGS_DIR = "configs/optimizers/"
+
 if __name__ == "__main__":
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(description="Run stochastic optimization experiments from config files.")
@@ -311,175 +352,250 @@ if __name__ == "__main__":
         "--optimizer",
         type=str,
         required=True,
-        help="Path to the YAML configuration file for the optimizer (optimizer, params, device).",
+        nargs="+",  # Restore: Accept one or more optimizer config files/relative paths
+        help="Name(s) of the YAML configuration file(s) for the optimizer(s), located in the predefined optimizer configs directory.",
     )
     parser.add_argument(
         "-N",
         "--N_runs",
         type=int,
-        default=10,
-        help="Number of runs (seeds) for averaging (default: 10, max: 100).",
+        default=1,
+        help="Number of runs (seeds) for averaging (default: 1, max: 100).",
     )
 
     args = parser.parse_args()
 
+    # --- Optimizer configuration paths will be constructed from args.optimizer and OPTIMIZER_CONFIGS_DIR ---
+    optimizer_config_file_args = args.optimizer
+
     # --- Load Configuration Files ---
-    def load_config(config_path):
+    def load_config(config_path, _load_chain=None):
+        if _load_chain is None:
+            _load_chain = set()
+        if config_path in _load_chain:
+            raise ValueError(f"Circular inheritance detected: {config_path} already in load chain: {_load_chain}")
+
+        _load_chain.add(config_path)
+
         try:
             with open(config_path, "r") as f:
-                config = yaml.safe_load(f)
-            print(f"Loaded configuration from: {config_path}")
-            return config
+                current_config = yaml.safe_load(f)
+            if not isinstance(current_config, dict):
+                # Handle empty YAML or non-dict content gracefully, or raise error
+                print(f"Warning: Config file {config_path} is empty or not a dictionary. Returning empty config.")
+                current_config = {}
+
+            print(f"Loaded initial configuration from: {config_path}")
+
+            parent_config_filename = current_config.pop("inherits_from", None)
+
+            if parent_config_filename:
+                # Resolve parent config path
+                actual_parent_filename = parent_config_filename
+                if not (actual_parent_filename.endswith(".yaml") or actual_parent_filename.endswith(".yml")):
+                    actual_parent_filename += ".yaml"
+
+                parent_config_path = os.path.join(OPTIMIZER_CONFIGS_DIR, actual_parent_filename)
+
+                print(f"  File {config_path} inherits from {parent_config_filename} (resolved to {parent_config_path})")
+                base_config = load_config(
+                    parent_config_path, _load_chain=_load_chain.copy()
+                )  # Pass a copy of the chain
+
+                # Deep merge current_config (child) into base_config (parent)
+                # The `current_config` at this point only contains overrides/additions
+                final_config = deep_merge(current_config, base_config)  # child specifics override base
+                _load_chain.remove(config_path)  # Remove from chain after successful load and merge
+                return final_config
+            else:
+                _load_chain.remove(config_path)  # Remove from chain after successful load
+                return current_config
+
         except FileNotFoundError:
             print(f"!!! ERROR: Configuration file not found at {config_path}. Exiting. !!!")
+            _load_chain.remove(config_path)  # Ensure removal on error too
             exit(1)
         except yaml.YAMLError as e:
             print(f"!!! ERROR: Failed to parse configuration file {config_path}: {e}. Exiting. !!!")
+            _load_chain.remove(config_path)
             exit(1)
         except Exception as e:
             print(f"!!! ERROR: An unexpected error occurred loading config {config_path}: {e}. Exiting. !!!")
+            _load_chain.remove(config_path)
             exit(1)
 
     problem_config = load_config(args.config)
-    optimizer_config = load_config(args.optimizer)
+    # Note: args.optimizer is now a list of paths
+    optimizer_config_paths = args.optimizer
 
-    # Check for device in optimizer config and set default if missing
-    if "optimizer_params" not in optimizer_config:
-        raise ValueError("optimizer_params not found in optimizer config")
-    optimizer_params = optimizer_config["optimizer_params"]  # Alias for convenience
-
-    if "device" not in optimizer_params:
-        default_device = "cuda" if torch.cuda.is_available() else "cpu"
-        optimizer_params["device"] = default_device
-        print(f"Device not specified in optimizer config, using default: {default_device}")
-
-    # --- Determine param_dim for batch_size defaulting (if needed) ---
-    # This needs to be determined before batch_size defaulting that might use it.
-    param_dim_for_config: int
-    dataset_params_alias = problem_config.get("dataset_params", {})
-    if dataset_params_alias.get("true_theta") is not None:
-        param_dim_for_config = len(dataset_params_alias["true_theta"])
-    elif dataset_params_alias.get("param_dim") is not None:
-        param_dim_for_config = int(dataset_params_alias["param_dim"])
-    else:
-        raise ValueError(
-            "Cannot determine param_dim from problem_config for batch_size setup. "
-            "Please provide 'true_theta' or 'param_dim' in dataset_params."
-        )
-
-    # --- Set or default batch_size in optimizer_config["optimizer_params"] and ensure it's an int ---
-    if optimizer_params.get("batch_size") is None:
-        batch_size_power = optimizer_params.get("batch_size_power", BaseOptimizer.DEFAULT_BATCH_SIZE_POWER)
-        calculated_batch_size = int(param_dim_for_config**batch_size_power)
-        optimizer_params["batch_size"] = calculated_batch_size
-        print(f"Calculated batch_size: {calculated_batch_size} for param dim: {param_dim_for_config}")
-    else:
-        # If batch_size is provided, ensure it's an integer
-        # Convert to float first to handle scientific notation (e.g., 1e4) from YAML
-        try:
-            optimizer_params["batch_size"] = int(float(optimizer_params["batch_size"]))
-        except ValueError:
-            raise ValueError(
-                f"Invalid batch_size in optimizer_config: {optimizer_params['batch_size']}. Must be a number convertible to int."
-            )
-
-    # --- Validate N_runs --- (Moved before config hashing for consistency)
+    # --- Validate N_runs ---
     requested_runs = args.N_runs
     max_runs = 100
     N_runs = max(1, min(requested_runs, max_runs))  # Clamp between 1 and max_runs
     if N_runs != requested_runs:
         print(f"Warning: Number of runs must be between 1 and {max_runs}. Using {N_runs} instead of {requested_runs}.")
 
-    # --- Pre-Run Setup ---
-    # Merge configs once for hashing and logging
-    merged_config = problem_config.copy()
-    merged_config.update(optimizer_config)
-    base_identifier = hashlib.md5(config_to_stable_string(merged_config).encode()).hexdigest()
+    # --- Instantiate Completion Manager (once) ---
+    completion_manager = RunCompletionManager()
 
-    # Calculate Project/Group names once
     problem_hash = hashlib.md5(config_to_stable_string(problem_config).encode()).hexdigest()[:8]
-    project_name = f"{problem_config.get('dataset')}-{problem_hash}"
-    optimizer_hash = hashlib.md5(config_to_stable_string(optimizer_config).encode()).hexdigest()[:6]
-    group_name = (
-        ("A " if optimizer_config.get("optimizer_params", {}).get("averaged", False) else "")
-        + f"{optimizer_config.get('optimizer')}"
-        + (
-            f"-{optimizer_config.get('optimizer_params', {}).get('version', '')}"
-            if "version" in optimizer_config.get("optimizer_params", {})
-            else ""
-        )
-        + f"-{optimizer_hash}"
-    )
+    project_name = f"{problem_config.get('dataset', 'unknown_dataset')}-{problem_hash}"
 
-    print(f"Project Name: {project_name}")
-    print(f"Group Name: {group_name}")
-    print(f"Device to be used: {optimizer_params['device']}")
-    print(f"Number of runs (seeds): {N_runs}")
-    # Print dataset size (for generated dataset)
+    # --- Determine param_dim for batch_size defaulting (if needed) ---
+    param_dim_for_config: int
+    dataset_params = problem_config.get("dataset_params", {})
+    if dataset_params.get("true_theta") is not None:
+        param_dim_for_config = len(dataset_params["true_theta"])
+    elif dataset_params.get("param_dim") is not None:
+        param_dim_for_config = int(dataset_params["param_dim"])
+    else:
+        raise ValueError(
+            "Cannot determine param_dim from problem_config for batch_size setup. "
+            "Please provide 'true_theta' or 'param_dim' in dataset_params."
+        )
+
     if "dataset_params" in problem_config and "n_dataset" in problem_config["dataset_params"]:
-        print(f"Dataset size: {problem_config['dataset_params']['n_dataset']}")
         try:
-            # Convert n_dataset to int *within problem_config* before the loop
-            problem_config["dataset_params"]["n_dataset"] = int(float(problem_config["dataset_params"]["n_dataset"]))
+            current_n_dataset = int(float(problem_config["dataset_params"]["n_dataset"]))
+            problem_config["dataset_params"]["n_dataset"] = current_n_dataset  # Ensure it's updated in dict passed
+            print(f"Dataset size: {current_n_dataset}")
         except ValueError:
-            print(f"!!! ERROR: Invalid value for 'n_dataset' in {args.config}. Exiting. !!!")
+            print(f"!!! ERROR: Invalid value for 'n_dataset' in problem_config {args.config}. Exiting. !!!")
             exit(1)
 
-    # --- Instantiate Completion Manager ---
-    completion_manager = RunCompletionManager()  # Uses default log file path
+    # --- Loop over each optimizer configuration argument ---
+    for optimizer_file_argument in optimizer_config_file_args:
 
-    # --- Run Loop ---
-    completed_runs_count = 0
-    skipped_runs_count = 0
-    current_run_config = merged_config.copy()
+        # Derive the base name for logging/wandb names from the original argument
+        # E.g., "configs/optimizers/SGD.yaml" -> "SGD"; "SGD" -> "SGD"
+        optimizer_config_filename_base = os.path.splitext(os.path.basename(optimizer_file_argument))[0]
 
-    for seed in range(N_runs):
-        run_name = f"{optimizer_config.get('optimizer', 'unknown_opt')}-{base_identifier}_seed{seed}"
-        print(f"\n--- Seed {seed}/{N_runs-1}: Checking run {run_name} ---")
+        # Determine the actual file path to load, ensuring it has an extension
+        candidate_filepath = optimizer_file_argument
+        if not (candidate_filepath.endswith(".yaml") or candidate_filepath.endswith(".yml")):
+            candidate_filepath += ".yaml"
+            # If shell provides configs/optimizers/SGD (no ext), candidate_filepath is configs/optimizers/SGD.yaml
+            # If user provides SGD, candidate_filepath is SGD.yaml
 
-        if completion_manager.check_if_run_completed(run_name):
-            print(f"--- Skipping already completed run: {run_name} ---")
-            skipped_runs_count += 1
-            continue
+        if os.path.isfile(candidate_filepath):
+            # If the argument (plus .yaml if needed) is a direct path to a file, use it.
+            # This handles shell globbing like "configs/optimizers/*.yaml"
+            # or if user types "SGD.yaml" and it's in CWD.
+            optimizer_config_filepath = candidate_filepath
+        else:
+            # Otherwise, assume the (basename of the) argument is relative to OPTIMIZER_CONFIGS_DIR.
+            # Take the basename of the original argument, ensure it has an extension, then join.
+            filename_component = os.path.basename(optimizer_file_argument)
+            if not (filename_component.endswith(".yaml") or filename_component.endswith(".yml")):
+                filename_component += ".yaml"
+            optimizer_config_filepath = os.path.join(OPTIMIZER_CONFIGS_DIR, filename_component)
 
-        wandb_run = None  # Define wandb_run outside try block for finally
-        success = False  # Flag to track if the run finished successfully
-        current_run_config["seed"] = seed
-        try:
-            print(f"--- Starting run: {run_name} (Project: {project_name}, Group: {group_name}) ---")
-            # Initialize WandB *before* calling run_experiment
-            wandb_run = wandb.init(
-                project=project_name,
-                config=current_run_config,
-                group=group_name,
-                name=run_name,
-                mode="online",
+        print(f"\n============================================================================")
+        print(
+            f"Processing Optimizer Argument: '{optimizer_file_argument}' (using base name: '{optimizer_config_filename_base}', resolved to load: '{optimizer_config_filepath}')"
+        )
+        print(f"============================================================================\n")
+        optimizer_config = load_config(optimizer_config_filepath)
+
+        # --- Per-Optimizer Config Setup ---
+        if "optimizer_params" not in optimizer_config:
+            raise ValueError(f"optimizer_params not found in optimizer config: {optimizer_config_filepath}")
+        optimizer_params = optimizer_config["optimizer_params"]
+
+        if "device" not in optimizer_params:
+            default_device = "cuda" if torch.cuda.is_available() else "cpu"
+            optimizer_params["device"] = default_device
+            print(f"Device not specified in {optimizer_config_filepath}, using default: {default_device}")
+
+        # --- Set or default batch_size in optimizer_config["optimizer_params"] and ensure it's an int ---
+        if optimizer_params.get("batch_size") is None:
+            batch_size_power = optimizer_params.get("batch_size_power", BaseOptimizer.DEFAULT_BATCH_SIZE_POWER)
+            calculated_batch_size = int(param_dim_for_config**batch_size_power)
+            optimizer_params["batch_size"] = calculated_batch_size
+            print(f"Calculated batch_size: {calculated_batch_size} for param dim: {param_dim_for_config}")
+        else:
+            try:
+                optimizer_params["batch_size"] = int(float(optimizer_params["batch_size"]))
+            except ValueError:
+                raise ValueError(
+                    f"Invalid batch_size in {optimizer_config_filepath}: {optimizer_params['batch_size']}. Must be a number convertible to int."
+                )
+
+        # --- Pre-Run Setup (per optimizer config) ---
+        optimizer_hash = hashlib.md5(config_to_stable_string(optimizer_config).encode()).hexdigest()[:6]
+        group_name = f"{optimizer_config_filename_base}-{optimizer_hash}"
+
+        merged_config = problem_config.copy()
+        merged_config.update(optimizer_config)
+        run_identifier = hashlib.md5(config_to_stable_string(merged_config).encode()).hexdigest()[:6]
+
+        print(f"--- Configuration for {optimizer_config_filename_base} ---")
+        print(f"Project Name: {project_name}")
+        print(f"Group Name: {group_name}")
+        print(f"Device to be used: {optimizer_params['device']}")
+        print(f"Number of runs (seeds): {N_runs}")
+
+        # --- Run Loop (per optimizer config, over seeds) ---
+        completed_runs_count = 0
+        skipped_runs_count = 0
+
+        for seed in range(N_runs):
+            current_run_config = merged_config.copy()
+            current_run_config["seed"] = seed
+            run_name = f"{optimizer_config_filename_base}-{run_identifier}_seed{seed}"
+
+            print(
+                f"\n--- Seed {seed}/{N_runs-1}: Checking run {run_name} for optimizer {optimizer_config_filename_base} ---"
             )
 
-            # Run the core experiment logic
-            run_experiment(problem_config, optimizer_config, seed)
+            if completion_manager.check_if_run_completed(run_name):
+                print(f"--- Skipping already completed run: {run_name} ---")
+                skipped_runs_count += 1
+                continue
 
-            # Mark successful completion *after* run_experiment finishes
-            completion_manager.log_run_completion(run_name)
-            completed_runs_count += 1
-            success = True  # Mark as success before finishing
-            print(f"--- Finished and logged run: {run_name} ---")
+            wandb_run = None
+            success = False
+            try:
+                print(f"--- Starting run: {run_name} (Project: {project_name}, Group: {group_name}) ---")
+                wandb_run = wandb.init(
+                    entity="USNA",
+                    project=project_name,
+                    config=current_run_config,  # Pass the config specific to this run (optimizer + seed)
+                    group=group_name,
+                    name=run_name,
+                    mode="online",
+                )
 
-        except Exception as e:
-            print(f"!!! ERROR during execution for seed {seed} (Run: {run_name}): {e} !!!")
-            traceback.print_exc()
-            raise e  # Stop script on first error
+                run_experiment(problem_config, optimizer_config, seed)  # Pass the current optimizer_config
 
-        finally:
-            if wandb_run is not None:
-                exit_code = 0 if success else 1
-                wandb.finish(exit_code=exit_code)
-                print(f"--- WandB run finished for {run_name} (Exit code: {exit_code}) ---")
+                completion_manager.log_run_completion(run_name)
+                completed_runs_count += 1
+                success = True
+                print(f"--- Finished and logged run: {run_name} ---")
 
-    print(f"\n--- Overall Summary ---")
-    print(f"Total seeds requested: {N_runs}")
-    print(f"Runs skipped (already complete): {skipped_runs_count}")
-    print(f"Runs completed successfully: {completed_runs_count}")
+            except Exception as e:
+                print(
+                    f"!!! ERROR during execution for {optimizer_config_filename_base}, seed {seed} (Run: {run_name}): {e} !!!"
+                )
+                traceback.print_exc()
+                # Decide if one error should stop all processing or just for this optimizer_config
+                # For now, let's re-raise to stop everything, consistent with previous behavior.
+                raise e
+
+            finally:
+                if wandb_run is not None:
+                    exit_code = 0 if success else 1
+                    wandb.finish(exit_code=exit_code)
+                    print(f"--- WandB run finished for {run_name} (Exit code: {exit_code}) ---")
+
+        print(f"\n--- Summary for Optimizer {optimizer_config_filename_base} ---")
+        print(f"Total seeds requested: {N_runs}")
+        print(f"Runs skipped (already complete): {skipped_runs_count}")
+        print(f"Runs completed successfully: {completed_runs_count}")
+        print(f"----------------------------------------------------------------------------")
+
+    # --- Overall Summary  ---
+    print(f"\n--- All optimizer configurations processed. ---")
 
     # # --- Add Automatic Sync ---
     # def check_internet_connection(host="8.8.8.8", port=53, timeout=3):

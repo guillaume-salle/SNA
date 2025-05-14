@@ -361,7 +361,7 @@ class USNA(BaseOptimizer):
             matrix_hessian_vector = torch.matmul(self.matrix_not_avg, hessian_vector)
             outer_product = torch.outer(matrix_hessian_vector, vector)
             self.matrix_not_avg -= lr_hessian * (outer_product + outer_product.T)
-            self.matrix_not_avg += lr_hessian**2 * torch.outer(vector, torch.matmul(hessian_vector.T, outer_product))
+            self.matrix_not_avg += lr_hessian**2 * torch.outer(vector, torch.matmul(hessian_vector, outer_product))
 
             if self.proj:  # add 2 * lr * vector @ vector.T
                 self.matrix_not_avg.add_(2 * lr_hessian * torch.outer(vector, vector))

@@ -149,7 +149,7 @@ def random_matrix(d: int, cov_const: float | None = None, device: str = "cpu") -
     if d == 0:
         return torch.empty((0, 0), device=device, dtype=torch.float32)
     if cov_const is None:
-        cov_const = 2.0  # Default exponent for 1/j^cov_const
+        cov_const = 1.0  # Default exponent for 1/j^cov_const
     if cov_const <= 0:  # Exponent should probably be positive for decay
         raise ValueError("cov_const (exponent) must be positive for this eigenvalue distribution.")
 
@@ -176,7 +176,10 @@ def random_matrix(d: int, cov_const: float | None = None, device: str = "cpu") -
     new_cov_matrix = Q @ torch.diag(new_eigenvalues) @ Q.T
 
     # print(f"Target eigenvalues for random_matrix: {new_eigenvalues}") # Optional debug print
-    print(f"Eigenvalues of the new matrix: {torch.sort(torch.linalg.eigvalsh(new_cov_matrix)).values}")
+    eigenvalues = torch.linalg.eigvalsh(new_cov_matrix)
+    min_eig = torch.min(eigenvalues)
+    max_eig = torch.max(eigenvalues)
+    print(f"    Min eigenvalue of the new matrix: {min_eig}, Max eigenvalue: {max_eig}")
     return new_cov_matrix
 
 
