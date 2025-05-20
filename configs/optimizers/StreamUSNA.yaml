@@ -1,4 +1,4 @@
-inherits_from: SGD.yaml
+inherits_from: StreamSGD.yaml
 optimizer: "USNA"
 optimizer_params:
   lr_hess_exp: 0.5

@@ -1,0 +1,4 @@
+inherits_from: StreamUSNA.yaml
+optimizer_params:
+  batch_size_power: 0.5
+  mask_size: 4

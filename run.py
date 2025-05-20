@@ -198,7 +198,6 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         "estimation_error": torch.linalg.vector_norm(theta_init - true_theta).item() ** 2,
         # Initial timing metrics for the first point
         "time": 0.0,
-        "optimizer_step_duration": 0.0,
         "optimizer_time_cumulative": 0.0,
     }
     compute_inv_hess_error = True if true_hessian is not None and hasattr(optimizer, "matrix") else False
@@ -263,7 +262,6 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
             "samples": 1 + cumulative_optimizer_samples,  # samples are 1 + (total processed by optimizer)
             "estimation_error": error,
             "time": loop_iteration_wall_time,
-            "optimizer_step_duration": current_step_duration,
             "optimizer_time_cumulative": optimizer_time_cumulative,
         }
         if compute_inv_hess_error and hasattr(optimizer, "matrix"):
@@ -271,6 +269,9 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
             inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
             log_data_step["inv_hess_error"] = inv_hess_error
             log_data_step["inv_hess_error_operator"] = inv_hess_error_operator
+        if hasattr(optimizer, "log_metrics"):
+            for key, value in optimizer.log_metrics.items():
+                log_data_step[f"opt_{key}"] = value
         wandb.log(log_data_step)
 
     final_wall_time = time.time() - start_time
@@ -279,28 +280,22 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     final_error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
     print(f"   Final estimation error: {final_error:.4f}")
 
-    average_optimizer_time_per_sample = 0.0
-    if cumulative_optimizer_samples > 0:
-        average_optimizer_time_per_sample = optimizer_time_cumulative / cumulative_optimizer_samples
-
+    # Final metrics
+    average_optimizer_time_per_sample = optimizer_time_cumulative / cumulative_optimizer_samples
+    average_optimizer_time_per_sample_ms = average_optimizer_time_per_sample * 1000.0
     log_data_final = {
-        "samples": 1 + cumulative_optimizer_samples,  # Use final cumulative samples
-        "estimation_error": final_error,
-        "time": final_wall_time,
-        "optimizer_time_cumulative": optimizer_time_cumulative,
-        "average_optimizer_time_per_sample": average_optimizer_time_per_sample,
+        # "average_optimizer_time_per_sample": average_optimizer_time_per_sample,  # TODO : change to ms
+        "average_optimizer_time_per_sample": average_optimizer_time_per_sample_ms,
     }
 
-    # Log optimizer-specific metrics if they exist
-    if hasattr(optimizer, "log_metrics") and isinstance(optimizer.log_metrics, dict):
-        for key, value in optimizer.log_metrics.items():
-            log_data_final[f"opt_metric_{key}"] = value
+    # Log only the final optimizer metrics if they exist
+    if hasattr(optimizer, "log_metrics_end") and isinstance(optimizer.log_metrics_end, dict):
+        for key, value in optimizer.log_metrics_end.items():
+            print(f"   Final optimizer metric: {key} = {value}")
+            log_data_final[f"opt_{key}"] = value
+    else:
+        print("   No final optimizer metrics to log")
 
-    if compute_inv_hess_error and hasattr(optimizer, "matrix"):
-        final_inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
-        final_inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
-        log_data_final["inv_hess_error"] = final_inv_hess_error
-        log_data_final["inv_hess_error_operator"] = final_inv_hess_error_operator
     wandb.log(log_data_final)
 
 
@@ -354,28 +349,27 @@ if __name__ == "__main__":
         "--config",
         type=str,
         required=True,
-        help="Name or path of the YAML configuration file for the problem definition. If a name, assumed to be in PROBLEM_CONFIGS_DIR.",
+        help="Path to the YAML problem configuration file.",
     )
     parser.add_argument(
         "-o",
         "--optimizer",
         type=str,
+        nargs="+",
         required=True,
-        nargs="+",  # Accept one or more optimizer config files/relative paths
-        help="Name(s) of the YAML configuration file(s) for the optimizer(s), located in the predefined optimizer configs directory.",
+        help="Paths or names of YAML optimizer configuration files (e.g., SGD or SGD.yaml for configs/optimizers/SGD.yaml, or a direct path like /path/to/my_opt.yaml). Shell globbing (e.g., 'configs/optimizers/*') is also supported.",
     )
     parser.add_argument(
         "-N",
         "--N_runs",
         type=int,
         default=1,
-        help="Number of runs (seeds) for averaging (default: 1, max: 100).",
+        help="Number of runs (seeds) for each optimizer config",
     )
 
     args = parser.parse_args()
 
-    # --- Optimizer configuration paths will be constructed from args.optimizer and OPTIMIZER_CONFIGS_DIR ---
-    optimizer_config_file_args = args.optimizer
+    problem_config_path_arg = args.config
 
     # --- Load Configuration Files ---
     def load_config(config_path, _load_chain=None):
@@ -456,6 +450,25 @@ if __name__ == "__main__":
         f"Attempting to load problem configuration: '{problem_config_argument}' (resolved to: '{actual_problem_config_filepath}')"
     )
     problem_config = load_config(actual_problem_config_filepath)
+
+    # --- Process optimizer arguments ---
+    optimizer_config_file_args = []
+    for optimizer_arg in args.optimizer:
+        # Handle glob patterns
+        if "*" in optimizer_arg or "?" in optimizer_arg:
+            import glob
+
+            expanded_paths = glob.glob(optimizer_arg)
+            if not expanded_paths:
+                print(f"Warning: No files found matching pattern: {optimizer_arg}")
+                continue
+            optimizer_config_file_args.extend(expanded_paths)
+        else:
+            optimizer_config_file_args.append(optimizer_arg)
+
+    if not optimizer_config_file_args:
+        print("Error: No valid optimizer configurations found. Exiting.")
+        exit(1)
 
     # --- Hash and project name are derived from the loaded problem_config and its resolved path ---
     # Note: project_name uses the original argument's basename for user-friendliness if desired,
@@ -624,52 +637,3 @@ if __name__ == "__main__":
 
     # --- Overall Summary  ---
     print(f"\n--- All optimizer configurations processed. ---")
-
-    # # --- Add Automatic Sync ---
-    # def check_internet_connection(host="8.8.8.8", port=53, timeout=3):
-    #     """
-    #     Check for internet connection by trying to connect to a known host.
-    #     Host: 8.8.8.8 (Google DNS)
-    #     Port: 53/tcp (DNS)
-    #     """
-    #     try:
-    #         socket.setdefaulttimeout(timeout)
-    #         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
-    #         return True
-    #     except socket.error:
-    #         return False
-
-    # print("\n--- Checking internet connection before attempting wandb sync... ---")
-    # if check_internet_connection():
-    #     print("--- Internet connection detected. Attempting to sync offline runs to wandb... ---")
-    #     try:
-    #         # Using check=True will raise an exception if the command fails
-    #         print("wandb sync --sync-all")
-    #         result = subprocess.run(["wandb", "sync", "--sync-all"], check=True, capture_output=True, text=True)
-    #         print("--- wandb sync successful ---")
-    #         print(result.stdout)  # Optionally print the output from wandb sync
-    #         if result.stderr:
-    #             print("--- wandb sync stderr: ---")
-    #             print(result.stderr)
-    #     except FileNotFoundError:
-    #         print("!!! ERROR: 'wandb' command not found. Is wandb installed and in your PATH? Skipping sync. !!!")
-    #     except subprocess.CalledProcessError as e:
-    #         print(f"!!! ERROR: 'wandb sync --sync-all' failed with exit code {e.returncode} !!!")
-    #         print("--- stdout ---")
-    #         print(e.stdout)
-    #         print("--- stderr ---")
-    #         print(e.stderr)
-    #         print("!!! Please check the errors above. You may need to run 'wandb sync --sync-all' manually. !!!")
-    #     except Exception as e:
-    #         print(f"!!! An unexpected error occurred during wandb sync: {e} !!!")
-    #         print("!!! Skipping sync. You may need to run 'wandb sync --sync-all' manually. !!!")
-    # else:
-    #     print("--- No internet connection detected. Skipping wandb sync. ---")
-    #     print("--- Please ensure you have an internet connection and run 'wandb sync --sync-all' manually later. ---")
-    # # --- End Automatic Sync ---
-
-    # print("\n--- Next Steps ---")
-    # print("Go to the wandb project page:")
-    # print("1. Use the 'Group' button/panel and group by 'wandb_group'.")
-    # print("2. Select the group corresponding to your experiment.")
-    # print("3. In the chart settings (pencil icon), enable 'Avg', 'StdDev', or 'Min/Max' aggregation.")

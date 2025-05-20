@@ -1,7 +1,7 @@
-inherits_from: SGD.yaml
+inherits_from: ASGD.yaml
 optimizer: "USNA"
 optimizer_params:
-  lr_hess_exp: 0.5
+  lr_hess_exp: 0.75
   lr_hess_const: 1.0
   lr_hess_add_iter: 0.0
   averaged_matrix: False

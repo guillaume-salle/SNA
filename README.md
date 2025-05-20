@@ -197,11 +197,11 @@ The main script `run.py` is used to launch experiments.
 
 **Command:**
 ```bash
-python run.py -c <path_to_problem_config.yaml> -o <optimizer_name_1> [<optimizer_name_2> ...] -N <num_runs>
+python run.py -c <problem_config.yaml> -o <optimizer_config.yaml> [<optimizer_config_2> ...] -N <num_runs>
 ```
 
 **Arguments:**
-*   `-c, --config PATH`: **Required**. Path to the problem definition YAML file.
+*   `-c, --config PATH`: **Required**. Path to the problem definition YAML file. The `.yaml` suffix is optional.
 *   `-o, --optimizer NAME_OR_PATH [NAME_OR_PATH ...]`: **Required**.
     *   Name(s) of optimizer YAML file(s) (e.g., `SGD`, `USNA_spherical`) located in the directory specified by `OPTIMIZER_CONFIGS_DIR` in `run.py` (default: `configs/optimizers/`). The `.yaml` suffix is optional.
     *   Alternatively, you can use shell globbing to pass full paths, e.g., `configs/optimizers/USNA*.yaml`.
@@ -210,15 +210,15 @@ python run.py -c <path_to_problem_config.yaml> -o <optimizer_name_1> [<optimizer
 **Examples:**
 1.  Run SGD on `my_problem.yaml` for 10 seeds:
     ```bash
-    python run.py -c configs/problem/my_problem.yaml -o SGD -N 10
+    python run.py -c my_problem.yaml -o SGD -N 10
     ```
 2.  Run SGD and a specific USNA variant for 5 seeds each:
     ```bash
-    python run.py -c configs/problem/my_problem.yaml -o SGD USNA_spherical -N 5
+    python run.py -c my_problem.yaml -o SGD USNA_spherical -N 5
     ```
 3.  Run all USNA variants whose config files start with `USNA` using shell globbing:
     ```bash
-    python run.py -c configs/problem/my_problem.yaml -o configs/optimizers/USNA* -N 3
+    python run.py -c my_problem.yaml -o configs/optimizers/USNA* -N 3
     ```
 
 ## Weights & Biases (WandB) Integration

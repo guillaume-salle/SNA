@@ -202,18 +202,15 @@ class LinearRegression(BaseObjectiveFunction):
                                    representing one or k vectors to multiply with the Hessian.
 
         Returns:
-            torch.Tensor: The Hessian-vector product. Shape will be (param_dim,) if input vector was 1D,
-                          or (param_dim, k) if input vector was 2D (param_dim, k).
+            torch.Tensor: The Hessian-vector product. Shape will be (param_dim, k).
         """
         X, _ = data
         batch_size = X.size(0)
         phi = self._add_bias(X)  # Shape (batch_size, param_dim)
 
-        squeeze_result = False
         if vector.ndim == 1:
             # Unsqueeze 1D vector to 2D (param_dim, 1) for consistent matrix multiplication
             vector_2d = vector.unsqueeze(1)
-            squeeze_result = True
         elif vector.ndim == 2:
             vector_2d = vector
         else:
@@ -227,18 +224,11 @@ class LinearRegression(BaseObjectiveFunction):
         # phi.T @ phi_v results in (param_dim, k)
         hessian_vector_product = torch.matmul(phi.T, phi_v) / batch_size
 
-        if squeeze_result:
-            return hessian_vector_product.squeeze(1)  # Squeeze back to 1D if input was 1D
-        else:
-            return hessian_vector_product
+        return hessian_vector_product
 
     def grad_and_hessian_vector(
         self, data: Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor, vector: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute the gradient and the Hessian-vector product(s) for linear regression,
-        optimizing by computing phi only once.
-        """
         X, y = data
         batch_size = X.size(0)
         phi = self._add_bias(X)  # Compute phi ONCE
@@ -249,10 +239,8 @@ class LinearRegression(BaseObjectiveFunction):
         grad = torch.matmul(phi.T, error) / batch_size
 
         # Hessian-vector product calculation (uses phi)
-        squeeze_result = False
         if vector.ndim == 1:
             vector_2d = vector.unsqueeze(1)
-            squeeze_result = True
         elif vector.ndim == 2:
             vector_2d = vector
         else:
@@ -263,9 +251,6 @@ class LinearRegression(BaseObjectiveFunction):
         # vector_2d is (param_dim, k)
         phi_v = torch.matmul(phi, vector_2d)  # phi @ V -> (batch_size, k)
         hess_vec_prod = torch.matmul(phi.T, phi_v) / batch_size  # phi.T @ (phi @ V) -> (param_dim, k)
-
-        if squeeze_result:
-            hess_vec_prod = hess_vec_prod.squeeze(1)  # Squeeze back to (param_dim,) if input was 1D
 
         return grad, hess_vec_prod
 
