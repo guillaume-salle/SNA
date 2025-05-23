@@ -1,11 +1,11 @@
 inherits_from: SGD_base.yaml
 optimizer: "USNA"
 optimizer_params:
-  lr_hess_exp: 0.5
+  lr_hess_exp: 0.66
   lr_hess_const: "expr: float(d)"
   lr_hess_add: "expr: float(d)"
   averaged_matrix: False
-  compute_hessian_param_avg: False
+  compute_hessian_param_avg: True
   proj: True
   version: mask
-  mask_size: 4
+  mask_size: 1

@@ -8,4 +8,4 @@ optimizer_params:
   compute_hessian_param_avg: False
   proj: True
   version: mask
-  mask_size: 4
+  mask_size: 1

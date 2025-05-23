@@ -624,40 +624,53 @@ if __name__ == "__main__":
         for seed in range(N_runs):
             current_run_config = merged_config.copy()
             current_run_config["seed"] = seed
-            run_name = f"{optimizer_config_filename_base}-{run_identifier}_{seed}"
 
-            print(
-                f"\n--- Seed {seed}/{N_runs-1}: Checking run {run_name} for optimizer {optimizer_config_filename_base} ---"
+            # Name for WandB UI
+            wandb_run_name = f"{optimizer_config_filename_base}"
+
+            # Unique identifier for the completion log (includes problem, optimizer, params, and seed)
+            completion_id_stable_string = config_to_stable_string(current_run_config)
+            completion_id_hash = hashlib.md5(completion_id_stable_string.encode()).hexdigest()[
+                :8
+            ]  # Consistent hash length
+            completion_run_id = (
+                f"{optimizer_config_filename_base}_{completion_id_hash}_{seed}"  # Make seed explicit for clarity in log
             )
 
-            if completion_manager.check_if_run_completed(run_name):
-                print(f"--- Skipping already completed run: {run_name} ---")
+            print(
+                f"\n--- Seed {seed}/{N_runs-1}: Checking run with completion ID {completion_run_id} for optimizer {optimizer_config_filename_base} ---"
+            )
+
+            if completion_manager.check_if_run_completed(completion_run_id):
+                print(f"--- Skipping already completed run (ID: {completion_run_id}) ---")
                 skipped_runs_count += 1
                 continue
 
             wandb_run = None
             success = False
             try:
-                print(f"--- Starting run: {run_name} (Project: {project_name}, Group: {group_name}) ---")
+                print(
+                    f"--- Starting run: {wandb_run_name} (Project: {project_name}, Group: {group_name}, Completion ID: {completion_run_id}) ---"
+                )
                 wandb_run = wandb.init(
                     entity="USNA",
                     project=project_name,
-                    config=current_run_config,  # Pass the config specific to this run (optimizer + seed)
+                    config=current_run_config,
                     group=group_name,
-                    name=run_name,
+                    name=wandb_run_name,
                     mode="online",
                 )
 
-                run_experiment(problem_config, optimizer_config, seed)
+                run_experiment(problem_config, optimizer_config, seed)  # Pass the current optimizer_config
 
-                completion_manager.log_run_completion(run_name)
+                completion_manager.log_run_completion(completion_run_id)  # Log with the unique ID
                 completed_runs_count += 1
                 success = True
-                print(f"--- Finished and logged run: {run_name} ---")
+                print(f"--- Finished and logged run (ID: {completion_run_id}, WandB Name: {wandb_run_name}) ---")
 
             except Exception as e:
                 print(
-                    f"!!! ERROR during execution for {optimizer_config_filename_base}, seed {seed} (Run: {run_name}): {e} !!!"
+                    f"!!! ERROR during execution for {optimizer_config_filename_base}, seed {seed} (Run: {wandb_run_name}): {e} !!!"
                 )
                 traceback.print_exc()
                 raise e
@@ -666,7 +679,7 @@ if __name__ == "__main__":
                 if wandb_run is not None:
                     exit_code = 0 if success else 1
                     wandb.finish(exit_code=exit_code)
-                    print(f"--- WandB run finished for {run_name} (Exit code: {exit_code}) ---")
+                    print(f"--- WandB run finished for {wandb_run_name} (Exit code: {exit_code}) ---")
 
         print(f"\n--- Summary for Optimizer {optimizer_config_filename_base} ---")
         print(f"Total seeds requested: {N_runs}")

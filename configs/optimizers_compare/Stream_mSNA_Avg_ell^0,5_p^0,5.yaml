@@ -1,0 +1,6 @@
+inherits_from: mSNA_Avg_base.yaml
+optimizer_params:
+  batch_size: "expr: int(pow(d, 0.5))"
+  lr_const: "expr: pow( int(pow(d, 0.5)) , 0.25)"
+  mask_size: "expr: int(pow(d, 0.5))"
+  
