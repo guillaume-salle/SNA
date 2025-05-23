@@ -1,8 +1,8 @@
 dataset: linear_regression
 dataset_params:
-  n_dataset: 1e6
+  n_dataset: 1e7
   # true_theta: 
-  param_dim: 200
+  param_dim: 100
   bias: &bias_setting True 
   cov_type: random
   cov_const: 1.0

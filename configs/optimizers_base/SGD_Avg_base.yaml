@@ -1,0 +1,4 @@
+inherits_from: SGD_base.yaml
+optimizer_params:
+  lr_exp: 0.75
+  averaged: True

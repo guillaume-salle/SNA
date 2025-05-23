@@ -1,0 +1,4 @@
+inherits_from: mSNA_base.yaml
+inherits_from: ell.yaml
+optimizer_params:
+  batch_size: "expr: int(pow(d,0.66))"

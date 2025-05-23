@@ -2,10 +2,8 @@ optimizer: SGD
 optimizer_params:
   lr_exp: 1.0
   lr_const: 1.0
-  lr_add_iter: 200.0
+  lr_add: "expr: float(d)"
   averaged: false
+  batch_size: 1
   # log_weight:
-  # batch_size:
-  batch_size_power: 0.0
-  # multiply_lr: 0.0
   # device: 

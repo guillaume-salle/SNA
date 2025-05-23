@@ -16,7 +16,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from objective_functions import LinearRegression
-from optimizers import SGD, USNA, BaseOptimizer
+from optimizers import SGD, mSNA, BaseOptimizer
 from datasets import generate_linear_regression
 
 
@@ -39,6 +39,52 @@ def deep_merge(source: dict, destination: dict) -> dict:
         else:
             destination[key] = value
     return destination
+
+
+def evaluate_expression(expr: str, context: dict) -> float:
+    """
+    Safely evaluate a mathematical expression with variables from context.
+    Only allows basic math operations and variables from context.
+    """
+    # Create a safe environment with only allowed operations
+    safe_dict = {
+        "abs": abs,
+        "min": min,
+        "max": max,
+        "pow": pow,
+        "round": round,
+        "sum": sum,
+        "int": int,
+        "float": float,
+        "math": math,  # This gives access to math functions like sqrt, log, etc.
+    }
+    # Add variables from context
+    safe_dict.update(context)
+
+    try:
+        # Use ast.literal_eval for safety, but first replace variables with their values
+        # This is a simple implementation - you might want to use a proper expression parser
+        # for more complex expressions
+        return eval(expr, {"__builtins__": {}}, safe_dict)
+    except Exception as e:
+        raise ValueError(f"Error evaluating expression '{expr}': {str(e)}")
+
+
+def process_config_values(config: dict, context: dict) -> dict:
+    """
+    Process config values, evaluating any expressions marked with 'expr:' prefix.
+    """
+    processed = {}
+    for key, value in config.items():
+        if isinstance(value, dict):
+            processed[key] = process_config_values(value, context)
+        elif isinstance(value, str) and value.startswith("expr:"):
+            # Extract the expression after 'expr:'
+            expr = value[5:].strip()
+            processed[key] = evaluate_expression(expr, context)
+        else:
+            processed[key] = value
+    return processed
 
 
 # ============================================================================ #
@@ -138,7 +184,7 @@ def get_optimizer_class(optimizer_name: str) -> BaseOptimizer:
     if optimizer_name == "SGD":
         return SGD
     elif optimizer_name == "USNA":
-        return USNA
+        return mSNA
     else:
         raise ValueError(f"Unknown optimizer specified in config: {optimizer_name}")
 
@@ -281,14 +327,12 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     print(f"   Final estimation error: {final_error:.4f}")
 
     # Final metrics
-    average_optimizer_time_per_sample = optimizer_time_cumulative / cumulative_optimizer_samples
-    average_optimizer_time_per_sample_ms = average_optimizer_time_per_sample * 1000.0
+    average_optimizer_time_per_sample = (optimizer_time_cumulative / cumulative_optimizer_samples) * 1000.0
     log_data_final = {
-        # "average_optimizer_time_per_sample": average_optimizer_time_per_sample,  # TODO : change to ms
-        "average_optimizer_time_per_sample": average_optimizer_time_per_sample_ms,
+        "average_optimizer_time_per_sample": average_optimizer_time_per_sample,
     }
 
-    # Log only the final optimizer metrics if they exist
+    # Log the final optimizer metrics, if they exist
     if hasattr(optimizer, "log_metrics_end") and isinstance(optimizer.log_metrics_end, dict):
         for key, value in optimizer.log_metrics_end.items():
             print(f"   Final optimizer metric: {key} = {value}")
@@ -296,6 +340,7 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     else:
         print("   No final optimizer metrics to log")
 
+    print(log_data_final)
     wandb.log(log_data_final)
 
 
@@ -336,10 +381,10 @@ def sanitize_name(name):
     )
 
 
-# Define the subdirectory where optimizer YAML configurations are stored
-OPTIMIZER_CONFIGS_DIR = "configs/optimizers/"
 # Define the subdirectory where problem YAML configurations are stored
-PROBLEM_CONFIGS_DIR = "configs/problem/"
+PROBLEM_CONFIGS_DIR = "configs/problems/"
+# Define the subdirectory for base optimizer configurations used for inheritance
+OPTIMIZER_BASE_DIR = "configs/optimizers_base/"
 
 if __name__ == "__main__":
     # --- Argument Parsing ---
@@ -401,9 +446,13 @@ if __name__ == "__main__":
                 if not (actual_parent_filename.endswith(".yaml") or actual_parent_filename.endswith(".yml")):
                     actual_parent_filename += ".yaml"
 
-                # Resolve parent path relative to the directory of the current config file
+                # First try to resolve parent path relative to the directory of the current config file
                 current_config_dir = os.path.dirname(config_path)
                 parent_config_path = os.path.join(current_config_dir, actual_parent_filename)
+
+                # If parent not found in same directory, try in OPTIMIZER_BASE_DIR
+                if not os.path.isfile(parent_config_path):
+                    parent_config_path = os.path.join(OPTIMIZER_BASE_DIR, actual_parent_filename)
 
                 print(f"  File {config_path} inherits from {parent_config_filename} (resolved to {parent_config_path})")
                 base_config = load_config(parent_config_path, _load_chain=_load_chain.copy())
@@ -451,6 +500,21 @@ if __name__ == "__main__":
     )
     problem_config = load_config(actual_problem_config_filepath)
 
+    # Create context from problem config for expression evaluation
+    context = {}
+    if "dataset_params" in problem_config:
+        if "true_theta" in problem_config["dataset_params"]:
+            # If true_theta is provided, use its length for d
+            true_theta = problem_config["dataset_params"]["true_theta"]
+            if isinstance(true_theta, list):
+                context["d"] = len(true_theta)
+            else:
+                raise ValueError("true_theta must be a list in the config file")
+        elif "param_dim" in problem_config["dataset_params"]:
+            context["d"] = problem_config["dataset_params"]["param_dim"]
+        if "n_dataset" in problem_config["dataset_params"]:
+            context["n"] = problem_config["dataset_params"]["n_dataset"]
+
     # --- Process optimizer arguments ---
     optimizer_config_file_args = []
     for optimizer_arg in args.optimizer:
@@ -470,16 +534,11 @@ if __name__ == "__main__":
         print("Error: No valid optimizer configurations found. Exiting.")
         exit(1)
 
-    # --- Hash and project name are derived from the loaded problem_config and its resolved path ---
-    # Note: project_name uses the original argument's basename for user-friendliness if desired,
-    # or could use the basename of actual_problem_config_filepath.
-    # For consistency in hashing the content, actual_problem_config_filepath should be what matters for content hash.
-    # The problem_config_filename_base_for_logging is for the human-readable part of the project name.
-
+    # --- Hash and project name are derived from the loaded problem_config ---
     problem_content_stable_string = config_to_stable_string(problem_config)  # Hash the actual loaded content
     problem_hash = hashlib.md5(problem_content_stable_string.encode()).hexdigest()[:8]
     # Use problem_config_filename_base_for_logging for the friendly name part
-    project_name = f"{problem_config_filename_base_for_logging}-{problem_hash}"
+    project_name = f"{problem_config_filename_base_for_logging}"
 
     # --- Validate N_runs ---
     requested_runs = args.N_runs
@@ -517,26 +576,22 @@ if __name__ == "__main__":
     for optimizer_file_argument in optimizer_config_file_args:
 
         optimizer_config_filename_base = os.path.splitext(os.path.basename(optimizer_file_argument))[0]
+        actual_optimizer_config_filepath = optimizer_file_argument
 
-        candidate_optimizer_path = optimizer_file_argument
-        if not (candidate_optimizer_path.endswith(".yaml") or candidate_optimizer_path.endswith(".yml")):
-            candidate_optimizer_path += ".yaml"
-
-        if os.path.isfile(candidate_optimizer_path):
-            actual_optimizer_config_filepath = candidate_optimizer_path
-        else:
-            filename_component = os.path.basename(optimizer_file_argument)
-            if not (filename_component.endswith(".yaml") or filename_component.endswith(".yml")):
-                filename_component += ".yaml"
-            actual_optimizer_config_filepath = os.path.join(OPTIMIZER_CONFIGS_DIR, filename_component)
+        if not os.path.isfile(actual_optimizer_config_filepath):
+            print(
+                f"!!! ERROR: Optimizer configuration file not found: '{actual_optimizer_config_filepath}'. Skipping. !!!"
+            )
+            continue  # Skip this problematic argument
 
         print(f"\n============================================================================")
         print(
             f"Processing Optimizer Argument: '{optimizer_file_argument}' (using base name: '{optimizer_config_filename_base}', resolved to load: '{actual_optimizer_config_filepath}')"
         )
         print(f"============================================================================\n")
-        # Use the same load_config for optimizers; it now handles relative inheritance correctly
         optimizer_config = load_config(actual_optimizer_config_filepath)
+        # Process expressions in optimizer config using problem context
+        optimizer_config = process_config_values(optimizer_config, context)
 
         # --- Per-Optimizer Config Setup ---
         if "optimizer_params" not in optimizer_config:
@@ -547,20 +602,6 @@ if __name__ == "__main__":
             default_device = "cuda" if torch.cuda.is_available() else "cpu"
             optimizer_params["device"] = default_device
             print(f"Device not specified in {actual_optimizer_config_filepath}, using default: {default_device}")
-
-        # --- Set or default batch_size in optimizer_config["optimizer_params"] and ensure it's an int ---
-        if optimizer_params.get("batch_size") is None:
-            batch_size_power = optimizer_params.get("batch_size_power", BaseOptimizer.DEFAULT_BATCH_SIZE_POWER)
-            calculated_batch_size = int(param_dim_for_config**batch_size_power)
-            optimizer_params["batch_size"] = calculated_batch_size
-            print(f"Calculated batch_size: {calculated_batch_size} for param dim: {param_dim_for_config}")
-        else:
-            try:
-                optimizer_params["batch_size"] = int(float(optimizer_params["batch_size"]))
-            except ValueError:
-                raise ValueError(
-                    f"Invalid batch_size in {actual_optimizer_config_filepath}: {optimizer_params['batch_size']}. Must be a number convertible to int."
-                )
 
         # --- Pre-Run Setup (per optimizer config) ---
         optimizer_hash = hashlib.md5(config_to_stable_string(optimizer_config).encode()).hexdigest()[:6]
@@ -607,7 +648,7 @@ if __name__ == "__main__":
                     mode="online",
                 )
 
-                run_experiment(problem_config, optimizer_config, seed)  # Pass the current optimizer_config
+                run_experiment(problem_config, optimizer_config, seed)
 
                 completion_manager.log_run_completion(run_name)
                 completed_runs_count += 1
@@ -619,8 +660,6 @@ if __name__ == "__main__":
                     f"!!! ERROR during execution for {optimizer_config_filename_base}, seed {seed} (Run: {run_name}): {e} !!!"
                 )
                 traceback.print_exc()
-                # Decide if one error should stop all processing or just for this optimizer_config
-                # For now, let's re-raise to stop everything, consistent with previous behavior.
                 raise e
 
             finally:

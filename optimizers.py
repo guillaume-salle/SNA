@@ -18,9 +18,7 @@ class BaseOptimizer(ABC):
     """
 
     DEFAULT_LOG_WEIGHT = 2.0
-    DEFAULT_BATCH_SIZE_POWER = 1.0
     DEFAULT_AVERAGED = False
-    DEFAULT_MULTIPLY_LR = 0.0
 
     def __init__(
         self,
@@ -28,13 +26,11 @@ class BaseOptimizer(ABC):
         obj_function: BaseObjectiveFunction,
         lr_exp: float,  # Required
         lr_const: float,  # Required
-        lr_add_iter: float,  # Required
+        lr_add: float,  # Required
         averaged: bool,
-        log_weight: float | None,
-        batch_size: int | None,
-        batch_size_power: float,
-        multiply_lr: float | str | None,  # if str use "default". 0 for no multiplication
-        device: str,
+        batch_size: int,
+        log_weight: float,
+        device: torch.device,
     ) -> None:
         """
         Initialize the optimizer with parameters.
@@ -45,13 +41,11 @@ class BaseOptimizer(ABC):
                 obj_function (BaseObjectiveFunction): The objective function to optimize.
                 lr_exp (float): The exponent for the learning rate.
                 lr_const (float): The constant for the learning rate.
-                lr_add_iter (float): The number of iterations to add to the learning rate.
+                lr_add (float): The number of iterations to add to the learning rate.
                 averaged (bool): Whether to use an averaged parameter.
+                batch_size (int): The batch size size for optimization.
                 log_weight (float): Exponent for the logarithmic weight.
-                batch_size (int | None): The batch size size for optimization. If None, calculated from the power of the dimension.
-                batch_size_power (float): The power of the dimension for the batch size.
-                multiply_lr (float | str): Multiply the learning rate by batch_size^multiply_lr, for mini-batch. 'default' uses 1 - lr_exp.
-                device (str): The device to create tensors on ('cpu' or 'cuda').
+                device (torch.device): The device to create tensors on.
         """
         self.device = device
         param = param.to(self.device)
@@ -59,19 +53,11 @@ class BaseOptimizer(ABC):
         self.obj_function = obj_function
         self.lr_exp = lr_exp
         self.lr_const = lr_const
-        self.lr_add_iter = lr_add_iter
-
-        # Batch size is either given or if not, calculated from the power of the dimension
-        self.batch_size = batch_size if batch_size is not None else int(param.shape[0] ** batch_size_power)
+        self.lr_add = lr_add
+        self.batch_size = batch_size
 
         self.averaged = averaged
         self.log_weight = log_weight
-
-        # Multiply the learning rate by an exponent of the batch_size
-        if isinstance(multiply_lr, str) and multiply_lr == "default":
-            multiply_lr = 1.0 - self.lr_exp
-        if multiply_lr > 0 and self.batch_size > 1:
-            self.lr_const *= self.batch_size**multiply_lr
 
         # Copy the initial parameter if averaged, otherwise use the same tensor reference
         # Use .clone().detach() for a non-gradient tracking copy
@@ -118,25 +104,21 @@ class SGD(BaseOptimizer):
         obj_function: BaseObjectiveFunction,
         lr_exp: float,
         lr_const: float,
-        lr_add_iter: float,
-        averaged: bool = False,
+        lr_add: float,
+        averaged: bool,
+        batch_size: int,
         log_weight: float = BaseOptimizer.DEFAULT_LOG_WEIGHT,
-        batch_size: int | None = None,
-        batch_size_power: float = BaseOptimizer.DEFAULT_BATCH_SIZE_POWER,
-        multiply_lr: float | str = 0.0,
-        device: str | None = None,
+        device: torch.device = torch.device("cpu"),
     ):
         super().__init__(
             param=param,
             obj_function=obj_function,
-            batch_size=batch_size,
-            batch_size_power=batch_size_power,
             lr_exp=lr_exp,
             lr_const=lr_const,
-            lr_add_iter=lr_add_iter,
+            lr_add=lr_add,
             averaged=averaged,
+            batch_size=batch_size,
             log_weight=log_weight,
-            multiply_lr=multiply_lr,
             device=device,
         )
 
@@ -154,20 +136,20 @@ class SGD(BaseOptimizer):
         grad = self.obj_function.grad(data, self.param_not_averaged)
 
         # Update the non averaged parameter
-        learning_rate = self.lr_const / (self.n_iter**self.lr_exp + self.lr_add_iter)
+        learning_rate = self.lr_const / (self.n_iter**self.lr_exp + self.lr_add)
         self.param_not_averaged -= learning_rate * grad
 
         if self.averaged:
             self.update_averaged_param()
 
 
-class USNA(BaseOptimizer):
+class mSNA(BaseOptimizer):
     """
-    Universal Stochastic Newton Algorithm optimizer using PyTorch.
+    Masked Stochastic Newton Algorithm optimizer using PyTorch.
     """
 
-    name = "USNA"
-    CONST_CONDITION = 0.5
+    name = "mSNA"
+    CONST_CONDITION = 1.0
 
     def __init__(
         self,
@@ -176,20 +158,18 @@ class USNA(BaseOptimizer):
         # required USNA specific parameters
         lr_hess_exp: float,
         lr_hess_const: float,
-        lr_hess_add_iter: float,
+        lr_hess_add: float,
         averaged_matrix: bool,
         compute_hessian_param_avg: bool,
         proj: bool,
         # Base Optimizer parameters
         lr_exp: float,
         lr_const: float,
-        lr_add_iter: float,
-        averaged: bool = False,
+        lr_add: float,
+        averaged: bool,
+        batch_size: int,
         log_weight: float = BaseOptimizer.DEFAULT_LOG_WEIGHT,
-        batch_size: int | None = None,
-        batch_size_power: float = BaseOptimizer.DEFAULT_BATCH_SIZE_POWER,
-        multiply_lr: float | str = 0.0,
-        device: str | None = None,
+        device: torch.device = torch.device("cpu"),
         # other USNA specific parameters
         log_weight_matrix: float = BaseOptimizer.DEFAULT_LOG_WEIGHT,
         version: str = "mask",
@@ -199,20 +179,18 @@ class USNA(BaseOptimizer):
         super().__init__(
             param=param,
             obj_function=obj_function,
-            batch_size=batch_size,
-            batch_size_power=batch_size_power,
             lr_exp=lr_exp,
             lr_const=lr_const,
-            lr_add_iter=lr_add_iter,
+            lr_add=lr_add,
             averaged=averaged,
-            log_weight=log_weight,
-            multiply_lr=multiply_lr,
+            batch_size=batch_size,
             device=device,
+            log_weight=log_weight,
         )
 
         self.lr_hess_exp = lr_hess_exp
         self.lr_hess_const = lr_hess_const
-        self.lr_hess_add_iter = lr_hess_add_iter
+        self.lr_hess_add = lr_hess_add
         self.mask_size = min(mask_size, self.param.shape[0])
         self.averaged_matrix = averaged_matrix
         self.log_weight_matrix = log_weight_matrix
@@ -263,7 +241,7 @@ class USNA(BaseOptimizer):
             self.update_averaged_matrix()
 
         # Update theta
-        learning_rate = self.lr_const / (self.n_iter**self.lr_exp + self.lr_add_iter)
+        learning_rate = self.lr_const / (self.n_iter**self.lr_exp + self.lr_add)
         self.param_not_averaged -= learning_rate * torch.matmul(self.matrix, grad)
 
         if self.averaged:
@@ -282,13 +260,14 @@ class USNA(BaseOptimizer):
         else:
             grad, hessian = self.obj_function.grad_and_hessian(data, self.param_not_averaged)
 
-        lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add_iter)
+        lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add)
 
+        # Log the norm of the hessian to see its behavior
         norm = torch.linalg.norm(hessian, ord=2)
         self.log_metrics = {}
         self.log_metrics["norm_hessian"] = norm
 
-        if lr_hessian * torch.linalg.norm(hessian, ord=2) <= self.CONST_CONDITION:
+        if lr_hessian * norm < self.CONST_CONDITION:
             matrix_hessian = torch.matmul(self.matrix_not_avg, hessian)
             self.matrix_not_avg += -lr_hessian * (matrix_hessian + matrix_hessian.T) + lr_hessian**2 * torch.matmul(
                 hessian, matrix_hessian
@@ -311,8 +290,7 @@ class USNA(BaseOptimizer):
         # Generate masks. The mask matrix should be multiplied by (dim/mask_size) so it averages to the identity matrix,
         # but it leads to too much skipped updates. Hence we also divide the learning rate by (dim/mask_size) in theory,
         # and in practice lr / (dim/mask_size) * (dim/mask_size) * mask_matrix = lr * mask_matrix.
-        # Remember to divide lr by (dim/mask_size) when adding identity.
-        masks = torch.randint(low=0, high=self.dim, size=(self.mask_size,))
+        masks = torch.randint(low=0, high=self.dim, size=(self.mask_size,), device=self.device)
 
         # Compute grad in the NOT averaged param, and hessian column in the desired param
         if self.compute_hessian_param_avg:
@@ -321,9 +299,9 @@ class USNA(BaseOptimizer):
         else:
             grad, hessian_columns = self.obj_function.grad_and_hessian_column(data, self.param_not_averaged, masks)
 
-        lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add_iter)
+        lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add)
 
-        if lr_hessian * torch.linalg.norm(hessian_columns, ord="fro") <= self.CONST_CONDITION:
+        if lr_hessian * torch.linalg.norm(hessian_columns, ord="fro") < self.CONST_CONDITION:
             # Compute this product only once and then transpose it
             matrix_hessian_vector = torch.matmul(self.matrix_not_avg, hessian_columns)
 
@@ -363,7 +341,7 @@ class USNA(BaseOptimizer):
                         + lr^2 * V * V^T * hess.T * A_old * hess * V * V^T + 2 * lr * P
                 where P = V V^T if proj=True, else P = E[V V^T].
                 The columns of V must be unit vectors.
-        Update condition is norm(lr * H V V^T) or norm(lr * H V) <= CONST_CONDITION using Frobenius norm as proxy.
+        Update condition is norm(lr * H V V^T) or norm(lr * H V) < CONST_CONDITION using Frobenius norm as proxy.
         """
         # Generate random vector(s) V of shape (dim, mask_size)
         if self.version in ["spherical_vector", "original_spherical_vector", "naive_spherical_vector"]:
@@ -391,7 +369,7 @@ class USNA(BaseOptimizer):
         else:
             grad, hessian_V = self.obj_function.grad_and_hessian_vector(data, self.param_not_averaged, vector_V)
 
-        lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add_iter)
+        lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add)
 
         perform_update = False
         if self.version in [
@@ -401,12 +379,12 @@ class USNA(BaseOptimizer):
             "original_rademacher_vector",
             "orthogonal_vector",
         ]:
-            # Condition: lr * ||HV||_F <= C
-            if lr_hessian * torch.linalg.norm(hessian_V, ord="fro") <= self.CONST_CONDITION:
+            # Condition: lr * ||HV||_F < C
+            if lr_hessian * torch.linalg.norm(hessian_V, ord="fro") < self.CONST_CONDITION:
                 perform_update = True
         elif self.version in ["naive_spherical_vector", "naive_rademacher_vector"]:  # Naive
-            # Condition: lr * ||HV||_op <= C
-            if lr_hessian * torch.linalg.norm(hessian_V, ord=2) <= self.CONST_CONDITION:
+            # Condition: lr * ||HV||_op < C
+            if lr_hessian * torch.linalg.norm(hessian_V, ord=2) < self.CONST_CONDITION:
                 perform_update = True
 
         if perform_update:
