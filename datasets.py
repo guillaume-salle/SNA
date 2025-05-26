@@ -101,7 +101,7 @@ class LinearRegressionIterableDataset(IterableDataset):
             phi_batch: torch.Tensor
             if self.bias:
                 ones_batch = torch.ones((current_actual_batch_size, 1), device=self.device, dtype=X_batch.dtype)
-                phi_batch = torch.cat([ones_batch, X_batch], dim=1)
+                phi_batch = torch.cat([X_batch, ones_batch], dim=1)
             else:
                 phi_batch = X_batch
 
@@ -284,9 +284,9 @@ def generate_linear_regression(
     if bias:
         if feature_dim > 0:
             true_hessian = torch.zeros((param_dim, param_dim), device=device, dtype=torch.float32)
-            true_hessian[0, 0] = 1.0
-            # E[X] is assumed to be 0, so off-diagonal blocks involving bias are 0
-            true_hessian[1:, 1:] = true_feature_covariance_matrix
+            true_hessian[:-1, :-1] = true_feature_covariance_matrix  # Feature block
+            true_hessian[-1, -1] = 1.0  # Bias term
+            # Off-diagonal elements involving bias and features are 0 due to E[X] = 0
         else:  # Only bias term, param_dim is 1
             true_hessian = torch.tensor([[1.0]], device=device, dtype=torch.float32)
     else:  # No bias, phi = X

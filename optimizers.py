@@ -258,7 +258,11 @@ class mSNA(BaseOptimizer):
             hessian = self.obj_function.hessian(data, self.param)
             grad = self.obj_function.grad(data, self.param_not_averaged)
         else:
-            grad, hessian = self.obj_function.grad_and_hessian(data, self.param_not_averaged)
+            result = self.obj_function.hessian(data, self.param_not_averaged, return_grad=True)
+            if isinstance(result, tuple):
+                hessian, grad = result
+            else:  # Should not happen if return_grad is True and implemented correctly
+                raise ValueError("hessian method did not return gradient when requested.")
 
         lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add)
 
@@ -287,17 +291,15 @@ class mSNA(BaseOptimizer):
         The Hessian estimate H is replaced by H M with M a mask matrix with mask_size ones on the diagonal.
         matrix_new = (I_d - lr *H M)^T A (I_d - lr *H M) + 2 * lr * M
         """
-        # Generate masks. The mask matrix should be multiplied by (dim/mask_size) so it averages to the identity matrix,
-        # but it leads to too much skipped updates. Hence we also divide the learning rate by (dim/mask_size) in theory,
-        # and in practice lr / (dim/mask_size) * (dim/mask_size) * mask_matrix = lr * mask_matrix.
         masks = torch.randint(low=0, high=self.dim, size=(self.mask_size,), device=self.device)
 
-        # Compute grad in the NOT averaged param, and hessian column in the desired param
         if self.compute_hessian_param_avg:
             hessian_columns = self.obj_function.hessian_column(data, self.param, masks)
             grad = self.obj_function.grad(data, self.param_not_averaged)
         else:
-            grad, hessian_columns = self.obj_function.grad_and_hessian_column(data, self.param_not_averaged, masks)
+            hessian_columns, grad = self.obj_function.hessian_column(
+                data, self.param_not_averaged, masks, return_grad=True
+            )
 
         lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add)
 
@@ -358,16 +360,17 @@ class mSNA(BaseOptimizer):
             # Generate a random orthogonal matrix using QR decomposition
             A = torch.randn(self.dim, self.dim, device=self.device, dtype=self.param.dtype)
             Q, _ = torch.linalg.qr(A)  # Q is orthogonal
-            # Take first mask_size columns of Q
-            vector_V = Q[:, : self.mask_size]  # Each column is already unit norm and orthogonal to others
+            vector_V = Q[:, : self.mask_size]
         else:
             raise ValueError(f"Invalid version for update_hessian_vector: {self.version}")
 
         if self.compute_hessian_param_avg:
-            hessian_V = self.obj_function.hessian_vector(data, self.param, vector_V)  # H @ V
+            hessian_V = self.obj_function.hessian_vector(data, self.param, vector_V)
             grad = self.obj_function.grad(data, self.param_not_averaged)
         else:
-            grad, hessian_V = self.obj_function.grad_and_hessian_vector(data, self.param_not_averaged, vector_V)
+            hessian_V, grad = self.obj_function.hessian_vector(
+                data, self.param_not_averaged, vector_V, return_grad=True
+            )
 
         lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add)
 
