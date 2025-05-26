@@ -52,7 +52,7 @@ class MyDataset(Dataset):
             return self.X[idx]
 
 
-class LinearRegressionIterableDataset(IterableDataset):
+class RegressionIterableDataset(IterableDataset):
     def __init__(
         self,
         n_total_samples: int,
@@ -63,6 +63,7 @@ class LinearRegressionIterableDataset(IterableDataset):
         device: str,
         data_batch_size: int,
         variance: float = 1.0,
+        problem_model_type: str = "LinearRegression",
     ):
         super().__init__()
         self.n_total_samples = n_total_samples
@@ -74,6 +75,7 @@ class LinearRegressionIterableDataset(IterableDataset):
         self.data_batch_size = data_batch_size
         self.cov_matrix = cov_matrix
         self.variance = variance
+        self.problem_model_type = problem_model_type
 
         self.feature_dist = None
         if self.feature_dim > 0:
@@ -105,7 +107,18 @@ class LinearRegressionIterableDataset(IterableDataset):
             else:
                 phi_batch = X_batch
 
-            Y_batch = torch.normal(mean=torch.matmul(phi_batch, self.true_theta), std=math.sqrt(self.variance))
+            Y_batch: torch.Tensor
+            if self.problem_model_type == "LogisticRegression":
+                logits = torch.matmul(phi_batch, self.true_theta)
+                probabilities = torch.sigmoid(logits)
+                # Bernoulli requires probabilities to be in [0,1]. Sigmoid ensures this.
+                # Ensure Y_batch has the same shape as probabilities for consistency,
+                # typically (batch_size,). Squeeze if necessary or ensure Bernoulli outputs that.
+                Y_batch = torch.bernoulli(probabilities).to(dtype=torch.float32)  # Match expected dtype for loss
+            elif self.problem_model_type == "LinearRegression":
+                Y_batch = torch.normal(mean=torch.matmul(phi_batch, self.true_theta), std=math.sqrt(self.variance))
+            else:
+                raise ValueError(f"Unknown problem_model_type: {self.problem_model_type} in dataset generation")
 
             samples_yielded_so_far += current_actual_batch_size
             yield X_batch, Y_batch
@@ -210,7 +223,7 @@ def generate_covariance_matrix(
     raise ValueError(f"Unhandled covariance matrix type: {cov_type}")
 
 
-def generate_linear_regression(
+def generate_regression(
     n_dataset: int,
     true_theta: list | torch.Tensor | None = None,
     param_dim: int | None = None,
@@ -220,9 +233,11 @@ def generate_linear_regression(
     diag: bool = False,
     device: str = "cpu",
     data_batch_size: int = 1,
-) -> Tuple[LinearRegressionIterableDataset, torch.Tensor, torch.Tensor]:
+    problem_model_type: str = "LinearRegression",
+) -> Tuple[RegressionIterableDataset, torch.Tensor, torch.Tensor]:
     """
     Generate data from a linear regression model using PyTorch, returning an iterable dataset.
+    Can also generate data for logistic regression if problem_model_type is "LogisticRegression".
 
     Parameters:
     n_dataset (int): Number of samples.
@@ -234,6 +249,7 @@ def generate_linear_regression(
     diag (bool): Whether to modify the diagonal of the Toeplitz matrix for cov_type='toeplitz'.
     device (str): The device to create tensors on.
     data_batch_size (int): Batch size for the iterable dataset to generate.
+    problem_model_type (str): Type of model for which data is generated ("LinearRegression" or "LogisticRegression").
 
     Returns:
     Tuple[LinearRegressionIterableDataset, torch.Tensor, torch.Tensor]:
@@ -292,7 +308,7 @@ def generate_linear_regression(
     else:  # No bias, phi = X
         true_hessian = true_feature_covariance_matrix
 
-    dataset = LinearRegressionIterableDataset(
+    dataset = RegressionIterableDataset(
         n_total_samples=n_dataset,
         true_theta=true_theta,
         theta_dim=param_dim,
@@ -300,6 +316,7 @@ def generate_linear_regression(
         cov_matrix=true_feature_covariance_matrix,
         device=device,
         data_batch_size=data_batch_size,
+        problem_model_type=problem_model_type,
     )
 
     return dataset, true_theta, true_hessian

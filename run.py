@@ -15,9 +15,9 @@ import collections.abc  # For deep_merge
 import torch
 from torch.utils.data import DataLoader
 
-from objective_functions import LinearRegression
+from objective_functions import LinearRegression, LogisticRegression
 from optimizers import SGD, mSNA, BaseOptimizer
-from datasets import generate_linear_regression
+from datasets import generate_regression
 
 
 # ============================================================================ #
@@ -207,15 +207,21 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     optimizer_name = optimizer_config["optimizer"]
     model_params = problem_config.get("model_params")
     dataset_params = problem_config.get("dataset_params")
+    problem_model_name = problem_config.get("model")
 
     # --- Setup: Data, Model, Initial Params ---
     torch.manual_seed(seed)
     data_gen_batch_size = optimizer_params["batch_size"]
-    # Assuming generate_linear_regression returns: dataset, true_theta, true_hessian
-    dataset, true_theta, true_hessian = generate_linear_regression(
-        **dataset_params, device=device, data_batch_size=data_gen_batch_size
+    dataset, true_theta, true_hessian = generate_regression(
+        **dataset_params, device=device, data_batch_size=data_gen_batch_size, problem_model_type=problem_model_name
     )
-    model = LinearRegression(**model_params)
+
+    if problem_model_name == "LinearRegression":
+        model = LinearRegression(**model_params)
+    elif problem_model_name == "LogisticRegression":
+        model = LogisticRegression(**model_params)
+    else:
+        raise ValueError(f"Unknown model type specified in problem_config: {problem_model_name}")
 
     # Generate a random direction for the initial offset
     random_direction = torch.randn_like(true_theta)

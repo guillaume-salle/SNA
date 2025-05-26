@@ -208,7 +208,7 @@ class LinearRegression(BaseObjectiveFunction):
 
 class LogisticRegression(BaseObjectiveFunction):
     """
-    Logistic Regression class using PyTorch.
+    Logistic Regression class using PyTorch for Y in {0, 1}.
     Use Ridge regularization with lambda_ as the regularization parameter.
     """
 
@@ -219,14 +219,20 @@ class LogisticRegression(BaseObjectiveFunction):
 
     def __call__(self, data: Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor) -> torch.Tensor:
         """
-        Compute the logistic regression loss (cross-entropy loss), assumes batched input.
+        Compute the logistic regression loss for Y in {0, 1}, assumes batched input.
+        This is F(theta) = E[ -Y * log(sigma(X^T*theta)) - (1-Y) * log(1-sigma(X^T*theta)) ]
+                    + (lambda/2) * ||theta||^2
         Returns the average loss over the batch.
         """
         X, y = data
-        phi = self._add_bias(X)
-        dot_product = torch.matmul(phi, param)
+        phi = self._add_bias(X)  # Shape (batch_size, d+1)
+        dot_product = torch.matmul(phi, param)  # Shape (batch_size,)
 
-        loss = torch.mean(torch.log(1 + torch.exp(dot_product)) - y * dot_product)
+        # Ensure y has the same shape as dot_product
+        y_shaped = y.squeeze().view_as(dot_product)
+        # Todo: Use BCEWithLogitsLoss for numerical stability.
+        loss = torch.mean(torch.log(1 + torch.exp(dot_product)) - dot_product * y_shaped)
+
         if self.lambda_ > 0:
             loss += 0.5 * self.lambda_ * torch.norm(param, p=2) ** 2
         return loss
@@ -239,12 +245,19 @@ class LogisticRegression(BaseObjectiveFunction):
         feature_dim = X.shape[-1]
         return feature_dim + 1 if self.bias else feature_dim
 
+        # grad = torch.matmul(phi.T, (sigmoid_dot_product - y)) / batch_size
+
     def _grad_internal(
         self, y: torch.Tensor, phi: torch.Tensor, sigmoid_dot_product: torch.Tensor, param: torch.Tensor
     ) -> torch.Tensor:
-        """Helper to compute gradient from pre-computed values."""
+        """
+        Helper to compute gradient from pre-computed values.
+        grad = (phi.T @ (sigmoid(dot_product) - y)) / batch_size + lambda * param
+        """
         batch_size = phi.size(0)
-        grad = torch.matmul(phi.T, (sigmoid_dot_product - y)) / batch_size
+        # Ensure y has the same shape as sigmoid_dot_product
+        y_shaped = y.squeeze().view_as(sigmoid_dot_product)
+        grad = torch.matmul(phi.T, sigmoid_dot_product - y_shaped) / batch_size
         if self.lambda_ > 0:
             grad += self.lambda_ * param
         return grad
@@ -252,16 +265,13 @@ class LogisticRegression(BaseObjectiveFunction):
     def grad(self, data: Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor) -> torch.Tensor:
         """
         Compute the gradient of the logistic regression loss, averaged over the batch. Assumes batched input.
-        grad = (phi.T @ (sigmoid(dot_product) - y)) / batch_size
         """
         X, y = data
-        batch_size = X.size(0)
         phi = self._add_bias(X)  # Shape (batch_size, d+1)
         dot_product = torch.matmul(phi, param)
         sigmoid_dot_product = torch.sigmoid(dot_product)
-        grad = torch.matmul(phi.T, (sigmoid_dot_product - y)) / batch_size
-        if self.lambda_ > 0:
-            grad += self.lambda_ * param
+
+        grad = self._grad_internal(y, phi, sigmoid_dot_product, param)
         return grad
 
     def hessian(
