@@ -2,3 +2,5 @@ inherits_from: SGD_base.yaml
 optimizer_params:
   lr_exp: 0.75
   averaged: True
+  lr_const: "expr: pow(batch_size, 0.25)"
+  lr_add: "expr: lr_const * d"

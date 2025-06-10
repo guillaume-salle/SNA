@@ -1,4 +1,4 @@
 inherits_from: mSNA_Avg_base.yaml
 optimizer_params:
   batch_size: "expr: d"
-  
+  version: full

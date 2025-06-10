@@ -1,4 +1,4 @@
-dataset: linear_regression
+dataset: synthetic_linear_regression
 dataset_params:
   n_dataset: 1e4
   true_theta: [0.0, 0.0]

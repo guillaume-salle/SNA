@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import torch
 from typing import Tuple, Union
+import torch.nn.functional as F
 
 
 class BaseObjectiveFunction(ABC):
@@ -230,8 +231,10 @@ class LogisticRegression(BaseObjectiveFunction):
 
         # Ensure y has the same shape as dot_product
         y_shaped = y.squeeze().view_as(dot_product)
-        # Todo: Use BCEWithLogitsLoss for numerical stability.
-        loss = torch.mean(torch.log(1 + torch.exp(dot_product)) - dot_product * y_shaped)
+
+        # loss = torch.mean(torch.log(1 + torch.exp(dot_product)) - dot_product * y_shaped)
+        # Use BCEWithLogitsLoss for numerical stability
+        loss = F.binary_cross_entropy_with_logits(dot_product, y_shaped, reduction="mean")
 
         if self.lambda_ > 0:
             loss += 0.5 * self.lambda_ * torch.norm(param, p=2) ** 2
@@ -245,8 +248,6 @@ class LogisticRegression(BaseObjectiveFunction):
         feature_dim = X.shape[-1]
         return feature_dim + 1 if self.bias else feature_dim
 
-        # grad = torch.matmul(phi.T, (sigmoid_dot_product - y)) / batch_size
-
     def _grad_internal(
         self, y: torch.Tensor, phi: torch.Tensor, sigmoid_dot_product: torch.Tensor, param: torch.Tensor
     ) -> torch.Tensor:
@@ -257,6 +258,7 @@ class LogisticRegression(BaseObjectiveFunction):
         batch_size = phi.size(0)
         # Ensure y has the same shape as sigmoid_dot_product
         y_shaped = y.squeeze().view_as(sigmoid_dot_product)
+        # phi is shape (batch_size ,d+1) so phi.T is shape (d+1, batch_size)
         grad = torch.matmul(phi.T, sigmoid_dot_product - y_shaped) / batch_size
         if self.lambda_ > 0:
             grad += self.lambda_ * param
@@ -283,10 +285,11 @@ class LogisticRegression(BaseObjectiveFunction):
         X, y = data
         batch_size = X.size(0)
         phi = self._add_bias(X)  # Shape (batch_size, d+1)
-        dot_product = torch.matmul(phi, param)
+        dot_product = torch.matmul(phi, param)  # product (batch_size, d+1) @ (d+1)
         sigmoid_dot_product = torch.sigmoid(dot_product)
 
-        weights = sigmoid_dot_product * (1 - sigmoid_dot_product)
+        weights = sigmoid_dot_product * (1 - sigmoid_dot_product)  # Shape (batch_size)
+        # phi.T shape: (d+1, batch_size), weights.unsqueeze(0) shape: (1, batch_size) -> result (d+1, d+1)
         hessian = torch.matmul(phi.T * weights.unsqueeze(0), phi) / batch_size
         if self.lambda_ > 0:
             hessian += self.lambda_ * torch.eye(phi.shape[1], device=phi.device, dtype=phi.dtype)

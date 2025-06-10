@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 
 from objective_functions import LinearRegression, LogisticRegression
 from optimizers import SGD, mSNA, BaseOptimizer
-from datasets import generate_regression
+from datasets import generate_regression, load_dataset_from_source
 
 
 # ============================================================================ #
@@ -44,7 +44,8 @@ def deep_merge(source: dict, destination: dict) -> dict:
 def evaluate_expression(expr: str, context: dict) -> float:
     """
     Safely evaluate a mathematical expression with variables from context.
-    Only allows basic math operations and variables from context.
+    The context includes global variables like 'd' and local variables
+    from the same config block.
     """
     # Create a safe environment with only allowed operations
     safe_dict = {
@@ -56,35 +57,78 @@ def evaluate_expression(expr: str, context: dict) -> float:
         "sum": sum,
         "int": int,
         "float": float,
-        "math": math,  # This gives access to math functions like sqrt, log, etc.
+        "math": math,
     }
-    # Add variables from context
+    # The context contains both global variables (like 'd') and
+    # already-evaluated local variables from the config block.
     safe_dict.update(context)
 
     try:
-        # Use ast.literal_eval for safety, but first replace variables with their values
-        # This is a simple implementation - you might want to use a proper expression parser
-        # for more complex expressions
+        # Eval is used here, but with a carefully controlled and safe scope.
         return eval(expr, {"__builtins__": {}}, safe_dict)
+    except NameError:
+        # Re-raise NameError specifically. This allows the calling function
+        # to catch it and handle dependency-based retries.
+        raise
     except Exception as e:
         raise ValueError(f"Error evaluating expression '{expr}': {str(e)}")
 
 
 def process_config_values(config: dict, context: dict) -> dict:
     """
-    Process config values, evaluating any expressions marked with 'expr:' prefix.
+    Process config values, evaluating expressions marked with 'expr:'.
+    This function handles dependencies between expressions in the same block.
     """
-    processed = {}
+    processed_config = {}
+    unprocessed_expressions = {}
+
+    # First pass: process non-expressions and identify all expressions
     for key, value in config.items():
         if isinstance(value, dict):
-            processed[key] = process_config_values(value, context)
+            # Recursively process nested dictionaries
+            # Pass a copy of the context to avoid child contexts polluting parent contexts
+            processed_config[key] = process_config_values(value, context.copy())
         elif isinstance(value, str) and value.startswith("expr:"):
-            # Extract the expression after 'expr:'
-            expr = value[5:].strip()
-            processed[key] = evaluate_expression(expr, context)
+            unprocessed_expressions[key] = value[5:].strip()
         else:
-            processed[key] = value
-    return processed
+            processed_config[key] = value
+
+    # Create a local context for expression evaluation within this block
+    # It starts with a copy of the global context
+    local_context = context.copy()
+    # And is updated with the non-expression values we just processed
+    local_context.update(processed_config)
+
+    # Second pass: iteratively evaluate expressions, handling dependencies
+    while unprocessed_expressions:
+        processed_this_round = []
+        for key, expr in unprocessed_expressions.items():
+            try:
+                # Attempt to evaluate the expression with the current local_context
+                eval_result = evaluate_expression(expr, local_context)
+                processed_config[key] = eval_result
+                local_context[key] = eval_result  # Add newly evaluated value to the context
+                processed_this_round.append(key)
+            except NameError:
+                # This expression depends on another one not yet processed.
+                # We will retry in the next iteration.
+                continue
+            except Exception as e:
+                # Handle other potential evaluation errors
+                raise ValueError(f"Error processing expression for key '{key}': {e}")
+
+        if not processed_this_round:
+            # If we went through a whole round without processing anything,
+            # it means there's a circular dependency.
+            raise ValueError(
+                f"Circular dependency or undefined variable in expressions: {list(unprocessed_expressions.keys())}"
+            )
+
+        # Remove the processed keys for the next iteration
+        for key in processed_this_round:
+            del unprocessed_expressions[key]
+
+    return processed_config
 
 
 # ============================================================================ #
@@ -95,6 +139,7 @@ def process_config_values(config: dict, context: dict) -> dict:
 class RunCompletionManager:
     """
     Manages the completion log file and cache for tracking completed runs.
+    The log file is structured with project names as headers.
     """
 
     DEFAULT_LOG_FILE = ".completed_runs.log"
@@ -113,12 +158,15 @@ class RunCompletionManager:
     def _read_log_file(self) -> None:
         """
         Reads the completion log file and populates the cache.
+        The file is expected to be structured with project names as headers.
         """
         completed_runs = set()
         try:
             with open(self.log_filepath, "r") as f:
                 for line in f:
-                    completed_runs.add(line.strip())
+                    # A run is an indented line. This correctly ignores project headers.
+                    if line.strip() and not line.endswith(":") and (line.startswith(" ") or line.startswith("\t")):
+                        completed_runs.add(line.strip())
             # Only print if file was actually read and had content potentially
             if completed_runs or os.path.exists(self.log_filepath):
                 print(f"--> Read {len(completed_runs)} entries from completion log: {self.log_filepath}")
@@ -152,23 +200,57 @@ class RunCompletionManager:
         is_completed = expected_run_name in self._completed_runs_cache
         return is_completed
 
-    def log_run_completion(self, run_name: str) -> None:
+    def log_run_completion(self, run_name: str, project_name: str) -> None:
         """
-        Logs a completed run name to the log file and updates the cache.
+        Logs a completed run name under its project header in the log file.
+        This method is not thread-safe but is sufficient for sequential runs.
 
         Args:
             run_name (str): The unique identifier of the completed run.
+            project_name (str): The name of the project for grouping.
         """
         try:
-            # Append the unique run name to the log file
-            with open(self.log_filepath, "a") as f:
-                f.write(f"{run_name}\n")
-            print(f"  [Completion Log] Added run to log: {self.log_filepath} -> {run_name}")
+            # Read all existing lines from the log file
+            try:
+                with open(self.log_filepath, "r") as f:
+                    lines = f.readlines()
+            except FileNotFoundError:
+                lines = []
+
+            # Prepare the new entries
+            project_header = f"{project_name}:"
+            new_run_line = f"    {run_name}\n"
+
+            project_index = -1
+            for i, line in enumerate(lines):
+                if line.strip() == project_header:
+                    project_index = i
+                    break
+
+            if project_index != -1:
+                # Find where to insert the new run within the project block
+                insert_index = project_index + 1
+                while insert_index < len(lines) and (
+                    lines[insert_index].startswith(" ") or lines[insert_index].startswith("\t")
+                ):
+                    insert_index += 1
+                lines.insert(insert_index, new_run_line)
+            else:  # Project header not found, so add it
+                # To keep it clean, add a newline before a new project if the file is not empty
+                if lines and not lines[-1].endswith("\n"):
+                    lines.append("\n")
+                lines.append(f"{project_header}\n")
+                lines.append(new_run_line)
+
+            # Write the updated content back to the file
+            with open(self.log_filepath, "w") as f:
+                f.writelines(lines)
+
+            print(f"  [Completion Log] Added run to log under project '{project_name}': {run_name}")
 
             # Update cache if it's already loaded
             if self._completed_runs_cache is not None:
                 self._completed_runs_cache.add(run_name)
-            # If cache wasn't loaded, it will be re-read on the next check
         except Exception as e:
             print(f"  [Completion Log] Warning: Failed to write to completion log {self.log_filepath}: {e}")
             # Invalidate cache if write fails, as its state might be inconsistent
@@ -189,7 +271,7 @@ def get_optimizer_class(optimizer_name: str) -> BaseOptimizer:
         raise ValueError(f"Unknown optimizer specified in config: {optimizer_name}")
 
 
-def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> None:
+def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, project_name: str) -> None:
     """
     Runs the core optimization loop for a single experiment seed.
     Assumes wandb is already initialized.
@@ -198,47 +280,131 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         problem_config (dict): The configuration dictionary for the problem.
         optimizer_config (dict): The configuration dictionary for the optimizer.
         seed (int): The seed for the experiment.
+        project_name (str): The name of the project for logging completion.
     """
 
     # --- Extract Parameters ---
     optimizer_params = optimizer_config.get("optimizer_params")
     device = optimizer_params.get("device")  # Should be present due to check in main
-    radius = problem_config["radius"]
-    optimizer_name = optimizer_config["optimizer"]
-    model_params = problem_config.get("model_params")
+    radius = problem_config.get("radius")
+    optimizer_name = optimizer_config.get("optimizer")
+    dataset_name = problem_config.get("dataset")
     dataset_params = problem_config.get("dataset_params")
-    problem_model_name = problem_config.get("model")
+    model_name = problem_config.get("model")
+    model_params = problem_config.get("model_params")
 
-    # --- Setup: Data, Model, Initial Params ---
-    torch.manual_seed(seed)
-    data_gen_batch_size = optimizer_params["batch_size"]
-    dataset, true_theta, true_hessian = generate_regression(
-        **dataset_params, device=device, data_batch_size=data_gen_batch_size, problem_model_type=problem_model_name
-    )
-
-    if problem_model_name == "LinearRegression":
+    # --- Setup: Model ---
+    # Instantiate the model early, as it's needed for Hessian estimation.
+    if model_name == "LinearRegression":
         model = LinearRegression(**model_params)
-    elif problem_model_name == "LogisticRegression":
+    elif model_name == "LogisticRegression":
         model = LogisticRegression(**model_params)
     else:
-        raise ValueError(f"Unknown model type specified in problem_config: {problem_model_name}")
+        raise ValueError(f"Unknown model type specified in problem_config: {model_name}")
 
-    # Generate a random direction for the initial offset
-    random_direction = torch.randn_like(true_theta)
-    norm_of_random_direction = torch.linalg.vector_norm(random_direction)
+    # --- Setup: Data, Model, Initial Params ---
+    # Ensure global seed is set for other one-off random operations (e.g., theta_init)
+    torch.manual_seed(seed)
+    batch_size = optimizer_params["batch_size"]  # This is the data_batch_size for the iterable dataset
 
-    # Normalize the random direction to have unit norm
-    # If norm_of_random_direction is 0 (e.g., if true_theta is an empty tensor for param_dim=0,
-    # or in the extremely rare case randn_like produces a zero vector for non-empty true_theta),
-    # the unit_direction will also be a zero vector (or empty tensor).
-    # In such cases, theta_init will be equal to true_theta.
-    if norm_of_random_direction == 0:
-        unit_direction = random_direction  # This is already a zero vector or an empty tensor
+    param_dim: int
+    train_set: torch.utils.data.Dataset
+    test_set: torch.utils.data.Dataset | None = None
+
+    if dataset_name in ["synthetic_linear_regression", "synthetic_logistic_regression"]:
+        # --- Main Training Dataset ---
+        # Define a device for the data generation process itself.
+        data_gen_device = device if "cuda" in str(device) else "cpu"
+
+        # Create and seed a dedicated RNG for the main training data.
+        rng_train = torch.Generator(device=data_gen_device)
+        rng_train.manual_seed(seed)
+
+        # Generate the main training set
+        train_set, true_theta, true_hessian = generate_regression(
+            dataset_name=dataset_name,
+            dataset_params=dataset_params,
+            device=device,
+            data_batch_size=batch_size,
+            rng_data=rng_train,
+            data_gen_device=data_gen_device,
+        )
+        param_dim = true_theta.shape[0]
+        n_train_set = dataset_params.get("n_dataset")
+
+        if true_hessian is None and true_theta is not None:
+            print(
+                f"   Estimating true_hessian for {dataset_name} at true_theta as it was not returned by generate_regression..."
+            )
+
+            # --- Hessian Estimation Dataset ---
+            # Use a large batch size for efficiency
+            hessian_estimation_batch_size = 2048
+            # Cap the number of samples for Hessian estimation for efficiency and precision
+            n_samples_for_hessian_estimation = int(1e5)
+
+            print(
+                f"   Using a temporary dataset of {n_samples_for_hessian_estimation} samples (batch size: {hessian_estimation_batch_size}) for this estimation."
+            )
+
+            # Create a temporary config for the Hessian dataset with the capped sample size
+            dataset_params_hessian = dataset_params.copy()
+            dataset_params_hessian["n_dataset"] = n_samples_for_hessian_estimation
+
+            # Create and seed a separate, identically-seeded RNG for Hessian estimation
+            # to ensure the data sequence is identical but the generator state is isolated.
+            rng_hessian = torch.Generator(device=data_gen_device)
+            rng_hessian.manual_seed(seed)
+
+            hessian_dataset, _, _ = generate_regression(
+                dataset_name=dataset_name,
+                dataset_params=dataset_params_hessian,  # Use the modified params
+                device=device,
+                data_batch_size=hessian_estimation_batch_size,
+                rng_data=rng_hessian,  # Use the separate generator
+                data_gen_device=data_gen_device,
+            )
+
+            accumulated_hessian = torch.zeros((param_dim, param_dim), device=device, dtype=true_theta.dtype)
+            num_batches_for_hessian_estimation = 0
+
+            hessian_estimation_loader = DataLoader(
+                hessian_dataset,  # Use the temporary dataset
+                batch_size=None,  # Pass batches from dataset as-is
+                shuffle=False,
+                pin_memory=(device == "cuda"),
+            )
+
+            for X_batch_hess_cpu, y_batch_hess_cpu in hessian_estimation_loader:
+                # Move data to the target device for the model's Hessian calculation
+                X_batch_hess, y_batch_hess = X_batch_hess_cpu.to(device), y_batch_hess_cpu.to(device)
+
+                batch_hess = model.hessian((X_batch_hess, y_batch_hess), true_theta)
+                accumulated_hessian += batch_hess * X_batch_hess.shape[0]
+                num_batches_for_hessian_estimation += 1
+
+            if num_batches_for_hessian_estimation > 0:
+                true_hessian = accumulated_hessian / n_samples_for_hessian_estimation
+                print(
+                    f"   Finished estimating true_hessian. Averaged over {num_batches_for_hessian_estimation} batches."
+                )
+            else:
+                print("   Warning: Hessian estimation skipped as no batches were processed from the dataset.")
+
     else:
-        unit_direction = random_direction / norm_of_random_direction
+        raise ValueError(f"dataset_name = {dataset_name} -- not implemented yet")
+        train_set, test_set, param_dim, n_train_set, n_test_set = load_dataset_from_source(**dataset_params)
+        true_theta, true_hessian = None, None
 
     # Initialize theta_init on a sphere of 'radius' around true_theta
-    theta_init = true_theta + radius * unit_direction
+    if true_theta is not None:
+        # For synthetic data, initialize around true_theta using radius
+        random_direction = torch.randn_like(true_theta)
+        random_direction /= torch.linalg.vector_norm(random_direction)
+        theta_init = true_theta + radius * random_direction
+    else:
+        print(f"Initializing theta_init to zeros for real dataset (param_dim: {param_dim})")
+        theta_init = torch.zeros(param_dim, device=device, dtype=torch.float32)
 
     # --- Setup: Optimizer ---
     optimizer_class = get_optimizer_class(optimizer_name)
@@ -247,14 +413,22 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     # --- Initial State Logging (before any optimizer steps) ---
     log_data_initial = {
         "samples": 1,  # Start samples at 1 for log scale compatibility
-        "estimation_error": torch.linalg.vector_norm(theta_init - true_theta).item() ** 2,
-        # Initial timing metrics for the first point
         "time": 0.0,
         "optimizer_time_cumulative": 0.0,
     }
+    compute_theta_error = True if true_theta is not None else False
+    if compute_theta_error:
+        log_data_initial["estimation_error"] = torch.linalg.vector_norm(theta_init - true_theta).item() ** 2
     compute_inv_hess_error = True if true_hessian is not None and hasattr(optimizer, "matrix") else False
     if compute_inv_hess_error:
         true_inv_hessian = torch.linalg.inv(true_hessian)
+
+        # Calculate and print eigenvalues of the true inverse Hessian
+        inv_hess_eigenvalues = torch.linalg.eigvalsh(true_inv_hessian)
+        lambda_min_inv_hess = inv_hess_eigenvalues.min().item()
+        lambda_max_inv_hess = inv_hess_eigenvalues.max().item()
+        print(f"   True Inv Hessian: lambda_min={lambda_min_inv_hess:.4f}, lambda_max={lambda_max_inv_hess:.4f}")
+
         inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
         # compute also operator norm of the error
         inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
@@ -263,9 +437,11 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     wandb.log(log_data_initial)
 
     # --- Training Loop (No separate warm-up phase) ---
+    # The dataloader will use the `train_set` which is already configured
+    # with its own independent, seeded generator (`rng_train`). No further seeding is needed here.
     dataloader = DataLoader(
-        dataset,
-        batch_size=None,
+        train_set,
+        batch_size=None,  # Correctly None for IterableDataset yielding batches
         shuffle=False,
         pin_memory=(device == "cuda"),
     )
@@ -273,9 +449,13 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     data_iterator = iter(dataloader)
     cumulative_optimizer_samples = 0  # Starts from 0, first step will process samples
 
-    # total_batches_in_dataset is needed for tqdm if used
-    total_batches_in_dataset = math.ceil(dataset.n_total_samples / dataset.data_batch_size)
-    print(f"   Starting optimization loop for {total_batches_in_dataset} steps...")
+    # total_batches_in_dataset is needed for tqdm
+    total_samples_for_tqdm = n_train_set
+    total_batches_in_dataset = math.ceil(total_samples_for_tqdm / batch_size)
+
+    print(
+        f"   Starting optimization loop for {total_batches_in_dataset if total_batches_in_dataset is not None else 'unknown'} steps..."
+    )
 
     # Start timers for the main timed loop
     start_time = time.time()  # Overall wall-clock start time for the loop
@@ -285,21 +465,31 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         data_iterator, total=total_batches_in_dataset, desc="   Optimization", unit="batch", leave=True
     )
 
-    for step, data_batch in enumerate(progress_bar_iterator):
-        X, y = data_batch
-        current_batch_size = X.size(0)
+    for _, data_batch in enumerate(progress_bar_iterator):
+        # data_batch is a tuple of CPU tensors yielded from our dataset
+        X_cpu, y_cpu = data_batch
+        current_batch_size = X_cpu.size(0)
 
         current_step_duration: float
         if device == "cuda":
+            # Time the data transfer and the optimizer step together for GPU
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
+
             start_event.record()
+            X = X_cpu.to(device)
+            y = y_cpu.to(device)
             optimizer.step((X, y))
             end_event.record()
+
             torch.cuda.synchronize()
             current_step_duration = start_event.elapsed_time(end_event) / 1000.0
         else:  # CPU
+            # For CPU, the .to(device) is a no-op but we include it for structural consistency.
+            # The timing correctly captures just the optimizer step.
             step_start_cpu_time = time.perf_counter()
+            X = X_cpu.to(device)
+            y = y_cpu.to(device)
             optimizer.step((X, y))
             step_end_cpu_time = time.perf_counter()
             current_step_duration = step_end_cpu_time - step_start_cpu_time
@@ -308,14 +498,15 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         cumulative_optimizer_samples += current_batch_size  # samples processed in this step
 
         loop_iteration_wall_time = time.time() - start_time
-        error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
 
         log_data_step = {
             "samples": 1 + cumulative_optimizer_samples,  # samples are 1 + (total processed by optimizer)
-            "estimation_error": error,
             "time": loop_iteration_wall_time,
             "optimizer_time_cumulative": optimizer_time_cumulative,
         }
+        if compute_theta_error:
+            log_data_step["estimation_error"] = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
+
         if compute_inv_hess_error and hasattr(optimizer, "matrix"):
             inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
             inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
@@ -329,8 +520,52 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     final_wall_time = time.time() - start_time
     print(f"\n   Finished optimization loop. Total wall time: {final_wall_time:.2f}s")
     print(f"   Total optimizer step time: {optimizer_time_cumulative:.4f}s")
-    final_error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
-    print(f"   Final estimation error: {final_error:.4f}")
+
+    if compute_theta_error:
+        final_error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
+        print(f"   Final estimation error: {final_error:.4f}")
+    else:
+        # Compute and log test accuracy if test_set is available
+        if test_set is not None and dataset_source == "sklearn":
+            print(f"   Calculating accuracy on the test set...")
+            test_loader = DataLoader(test_set, batch_size=256)  # Use a larger batch for eval
+
+            all_predictions = []
+            all_targets = []
+            model.eval()  # Set model to evaluation mode if it has layers like dropout/batchnorm
+            with torch.no_grad():
+                for X_batch, y_batch in test_loader:
+                    phi_batch = model._add_bias(X_batch.to(device))  # Ensure data is on the correct device
+
+                    # Assuming model is LogisticRegression, get logits
+                    # If other models are used, this part might need to be model-specific
+                    if model_name == "LogisticRegression":
+                        logits = torch.matmul(phi_batch, optimizer.param)  # Use final optimized parameters
+                        predictions = (torch.sigmoid(logits) > 0.5).float()
+                    else:
+                        # Placeholder for other model predictions - for now, we assume LogisticRegression
+                        # Or, have the model predict directly if it has a .predict() method
+                        print(
+                            f"Warning: Test set accuracy calculation not implemented for model type {dataset_name}. Skipping."
+                        )
+                        all_predictions = []  # Clear to avoid calculating accuracy
+                        break
+
+                    all_predictions.append(predictions.cpu())
+                    all_targets.append(y_batch.cpu().squeeze())
+
+            if all_predictions and all_targets:
+                predictions_tensor = torch.cat(all_predictions)
+                targets_tensor = torch.cat(all_targets)
+
+                correct_predictions = (predictions_tensor == targets_tensor).sum().item()
+                total_samples = targets_tensor.size(0)
+                accuracy = correct_predictions / total_samples if total_samples > 0 else 0.0
+
+                print(f"   Test Set Accuracy: {accuracy:.4f} ({correct_predictions}/{total_samples})")
+                log_data_final["test_set_accuracy"] = accuracy
+            else:
+                print(f"   Skipped test set accuracy calculation or no predictions were made.")
 
     # Final metrics
     average_optimizer_time_per_sample = (optimizer_time_cumulative / cumulative_optimizer_samples) * 1000.0
@@ -667,9 +902,9 @@ if __name__ == "__main__":
                     mode="online",
                 )
 
-                run_experiment(problem_config, optimizer_config, seed)  # Pass the current optimizer_config
+                run_experiment(problem_config, optimizer_config, seed, project_name)
 
-                completion_manager.log_run_completion(completion_run_id)  # Log with the unique ID
+                completion_manager.log_run_completion(completion_run_id, project_name)
                 completed_runs_count += 1
                 success = True
                 print(f"--- Finished and logged run (ID: {completion_run_id}, WandB Name: {wandb_run_name}) ---")

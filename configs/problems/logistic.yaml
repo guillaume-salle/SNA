@@ -1,4 +1,4 @@
-dataset: logistic_regression
+dataset: synthetic_logistic_regression
 dataset_params:
   n_dataset: 1e4
   true_theta:

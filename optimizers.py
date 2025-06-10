@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 import math
 from objective_functions import BaseObjectiveFunction
+import torch.nn.functional as F
 
 
 class BaseOptimizer(ABC):
@@ -279,6 +280,15 @@ class mSNA(BaseOptimizer):
             self.matrix_not_avg.diagonal().add_(2 * lr_hessian)
         else:
             self.log_metrics_end["skip_update"] += 1
+
+        norm_An = torch.linalg.norm(self.matrix_not_avg, ord="fro")
+        norm_An_op = torch.linalg.norm(self.matrix_not_avg, ord=2)
+        self.log_metrics["norm_An"] = norm_An
+        self.log_metrics["norm_An_op"] = norm_An_op
+
+        term_factor = torch.eye(self.dim, device=self.device, dtype=self.param.dtype) - lr_hessian * hessian
+        norm_factor = torch.linalg.norm(term_factor, ord=2)
+        self.log_metrics["norm_factor"] = norm_factor
 
         return grad
 
