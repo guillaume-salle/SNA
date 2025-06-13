@@ -19,6 +19,7 @@ class MyDataset(Dataset):
         """
         self.X = X
         self.Y = Y
+        self.n_samples = len(X)
 
     def __iter__(
         self,
@@ -344,9 +345,7 @@ def generate_regression(
     return dataset, true_theta, true_hessian
 
 
-def load_covtype_dataset_torch(
-    test_size: float, random_state: int, device: str
-) -> Tuple[MyDataset, MyDataset, int, str]:
+def load_covtype_dataset(test_size: float, random_state: int, device: str) -> Tuple[MyDataset, MyDataset, int]:
     """
     Load the covtype dataset from sklearn, preprocess, and split it.
 
@@ -360,7 +359,6 @@ def load_covtype_dataset_torch(
         - Training dataset (MyDataset instance).
         - Testing dataset (MyDataset instance).
         - Parameter dimension (number of features).
-        - Dataset name ("covtype").
     """
     name = "covtype"
     print(f"Loading {name} dataset...")
@@ -400,15 +398,15 @@ def load_covtype_dataset_torch(
 
 def load_dataset_from_source(
     dataset_name: str, device: str, test_size: float, random_state: int = 0
-) -> Tuple[MyDataset, MyDataset | None, int, torch.Tensor | None, torch.Tensor | None, str]:
+) -> Tuple[MyDataset, MyDataset, int, int, int]:
     """
     Loads a specified dataset. For now, supports 'covtype'.
-    Returns datasets, param_dim, true_theta (None), true_hessian (None), and dataset name.
+    Returns train/test datasets, param_dim, n_train, and n_test.
     """
     if dataset_name.lower() == "covtype":
-        train_dataset, test_dataset, param_dim_data = load_covtype_dataset_torch(
+        train_dataset, test_dataset, param_dim_data = load_covtype_dataset(
             test_size=test_size, random_state=random_state, device=device
         )
-        return train_dataset, test_dataset, param_dim_data
+        return train_dataset, test_dataset, param_dim_data, train_dataset.n_samples, test_dataset.n_samples
     else:
         raise ValueError(f"Unknown dataset_name for loading: {dataset_name}")

@@ -341,7 +341,7 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
             # Use a large batch size for efficiency
             hessian_estimation_batch_size = 2048
             # Cap the number of samples for Hessian estimation for efficiency and precision
-            n_samples_for_hessian_estimation = int(1e5)
+            n_samples_for_hessian_estimation = int(1e7)
 
             print(
                 f"   Using a temporary dataset of {n_samples_for_hessian_estimation} samples (batch size: {hessian_estimation_batch_size}) for this estimation."
@@ -366,7 +366,6 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
             )
 
             accumulated_hessian = torch.zeros((param_dim, param_dim), device=device, dtype=true_theta.dtype)
-            num_batches_for_hessian_estimation = 0
 
             hessian_estimation_loader = DataLoader(
                 hessian_dataset,  # Use the temporary dataset
@@ -376,24 +375,20 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
             )
 
             for X_batch_hess_cpu, y_batch_hess_cpu in hessian_estimation_loader:
-                # Move data to the target device for the model's Hessian calculation
+                # Move data to the model device for the model's Hessian calculation
                 X_batch_hess, y_batch_hess = X_batch_hess_cpu.to(device), y_batch_hess_cpu.to(device)
 
                 batch_hess = model.hessian((X_batch_hess, y_batch_hess), true_theta)
                 accumulated_hessian += batch_hess * X_batch_hess.shape[0]
-                num_batches_for_hessian_estimation += 1
 
-            if num_batches_for_hessian_estimation > 0:
-                true_hessian = accumulated_hessian / n_samples_for_hessian_estimation
-                print(
-                    f"   Finished estimating true_hessian. Averaged over {num_batches_for_hessian_estimation} batches."
-                )
-            else:
-                print("   Warning: Hessian estimation skipped as no batches were processed from the dataset.")
+            true_hessian = accumulated_hessian / n_samples_for_hessian_estimation
+            print(f"   Finished estimating true_hessian. Averaged over {n_samples_for_hessian_estimation:.0e} samples.")
 
     else:
-        raise ValueError(f"dataset_name = {dataset_name} -- not implemented yet")
-        train_set, test_set, param_dim, n_train_set, n_test_set = load_dataset_from_source(**dataset_params)
+        print(f"   Loading real dataset: {dataset_name}...")
+        train_set, test_set, param_dim, n_train_set, n_test_set = load_dataset_from_source(
+            dataset_name=dataset_name, device=device, **dataset_params
+        )
         true_theta, true_hessian = None, None
 
     # Initialize theta_init on a sphere of 'radius' around true_theta
@@ -420,8 +415,12 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
     if compute_theta_error:
         log_data_initial["estimation_error"] = torch.linalg.vector_norm(theta_init - true_theta).item() ** 2
     compute_inv_hess_error = True if true_hessian is not None and hasattr(optimizer, "matrix") else False
+    compute_inv_hess_error_avg = (
+        True if true_hessian is not None and getattr(optimizer, "averaged_matrix", False) else False
+    )
     if compute_inv_hess_error:
         true_inv_hessian = torch.linalg.inv(true_hessian)
+        del true_hessian  # free memory
 
         # Calculate and print eigenvalues of the true inverse Hessian
         inv_hess_eigenvalues = torch.linalg.eigvalsh(true_inv_hessian)
@@ -429,11 +428,15 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         lambda_max_inv_hess = inv_hess_eigenvalues.max().item()
         print(f"   True Inv Hessian: lambda_min={lambda_min_inv_hess:.4f}, lambda_max={lambda_max_inv_hess:.4f}")
 
-        inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
-        # compute also operator norm of the error
-        inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
-        log_data_initial["inv_hess_error"] = inv_hess_error
+        inv_hess_error_fro = torch.linalg.norm(true_inv_hessian - optimizer.matrix_not_avg, ord="fro").item() ** 2
+        inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix_not_avg, ord=2).item()
+        log_data_initial["inv_hess_error_fro"] = inv_hess_error_fro
         log_data_initial["inv_hess_error_operator"] = inv_hess_error_operator
+        if compute_inv_hess_error_avg:
+            inv_hess_error_fro_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item() ** 2
+            inv_hess_error_operator_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
+            log_data_initial["inv_hess_error_fro_avg"] = inv_hess_error_fro_avg
+            log_data_initial["inv_hess_error_operator_avg"] = inv_hess_error_operator_avg
     wandb.log(log_data_initial)
 
     # --- Training Loop (No separate warm-up phase) ---
@@ -507,11 +510,18 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         if compute_theta_error:
             log_data_step["estimation_error"] = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
 
-        if compute_inv_hess_error and hasattr(optimizer, "matrix"):
-            inv_hess_error = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item()
-            inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
-            log_data_step["inv_hess_error"] = inv_hess_error
+        if compute_inv_hess_error:
+            inv_hess_error_fro = torch.linalg.norm(true_inv_hessian - optimizer.matrix_not_avg, ord="fro").item() ** 2
+            inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix_not_avg, ord=2).item()
+            log_data_step["inv_hess_error_fro"] = inv_hess_error_fro
             log_data_step["inv_hess_error_operator"] = inv_hess_error_operator
+
+            if compute_inv_hess_error_avg:
+                inv_hess_error_fro_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item() ** 2
+                inv_hess_error_operator_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
+                log_data_step["inv_hess_error_fro_avg"] = inv_hess_error_fro_avg
+                log_data_step["inv_hess_error_operator_avg"] = inv_hess_error_operator_avg
+
         if hasattr(optimizer, "log_metrics"):
             for key, value in optimizer.log_metrics.items():
                 log_data_step[f"opt_{key}"] = value
@@ -521,57 +531,65 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
     print(f"\n   Finished optimization loop. Total wall time: {final_wall_time:.2f}s")
     print(f"   Total optimizer step time: {optimizer_time_cumulative:.4f}s")
 
+    # Final metrics
+    log_data_final = {}
+
     if compute_theta_error:
         final_error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
         print(f"   Final estimation error: {final_error:.4f}")
     else:
         # Compute and log test accuracy if test_set is available
-        if test_set is not None and dataset_source == "sklearn":
-            print(f"   Calculating accuracy on the test set...")
+        if test_set is not None:
+            print(f"   Calculating accuracy and loss on the test set...")
             test_loader = DataLoader(test_set, batch_size=256)  # Use a larger batch for eval
 
             all_predictions = []
             all_targets = []
-            model.eval()  # Set model to evaluation mode if it has layers like dropout/batchnorm
+            total_loss = 0.0
             with torch.no_grad():
-                for X_batch, y_batch in test_loader:
-                    phi_batch = model._add_bias(X_batch.to(device))  # Ensure data is on the correct device
+                for X_batch_cpu, y_batch_cpu in test_loader:
+                    X_batch, y_batch = X_batch_cpu.to(device), y_batch_cpu.to(device)
 
-                    # Assuming model is LogisticRegression, get logits
-                    # If other models are used, this part might need to be model-specific
+                    # --- Loss Calculation ---
+                    # The model is the objective function, call it directly.
+                    # It returns loss averaged over the batch, so we multiply by batch size to get total.
+                    loss = model((X_batch, y_batch), optimizer.param)
+                    total_loss += loss.item() * X_batch.size(0)
+
+                    # --- Accuracy Calculation (currently only for Logistic Regression) ---
                     if model_name == "LogisticRegression":
-                        logits = torch.matmul(phi_batch, optimizer.param)  # Use final optimized parameters
+                        phi_batch = model._add_bias(X_batch)
+                        logits = torch.matmul(phi_batch, optimizer.param)
                         predictions = (torch.sigmoid(logits) > 0.5).float()
+                        all_predictions.append(predictions.cpu())
+                        all_targets.append(y_batch_cpu.squeeze())
                     else:
-                        # Placeholder for other model predictions - for now, we assume LogisticRegression
-                        # Or, have the model predict directly if it has a .predict() method
-                        print(
-                            f"Warning: Test set accuracy calculation not implemented for model type {dataset_name}. Skipping."
-                        )
-                        all_predictions = []  # Clear to avoid calculating accuracy
-                        break
+                        # For other models, we can still calculate loss, but accuracy logic is specific.
+                        # We just pass here and don't populate accuracy metrics.
+                        pass
 
-                    all_predictions.append(predictions.cpu())
-                    all_targets.append(y_batch.cpu().squeeze())
+            # --- Log Final Metrics ---
+            total_samples = len(test_set)
+            if total_samples > 0:
+                # Log average test loss
+                average_loss = total_loss / total_samples
+                print(f"   Test Set Avg Loss: {average_loss:.4f}")
+                log_data_final["test_set_loss"] = average_loss
 
             if all_predictions and all_targets:
+                # Log test accuracy
                 predictions_tensor = torch.cat(all_predictions)
                 targets_tensor = torch.cat(all_targets)
-
                 correct_predictions = (predictions_tensor == targets_tensor).sum().item()
-                total_samples = targets_tensor.size(0)
                 accuracy = correct_predictions / total_samples if total_samples > 0 else 0.0
 
                 print(f"   Test Set Accuracy: {accuracy:.4f} ({correct_predictions}/{total_samples})")
                 log_data_final["test_set_accuracy"] = accuracy
             else:
-                print(f"   Skipped test set accuracy calculation or no predictions were made.")
+                print(f"   Skipped test set accuracy calculation (not applicable for this model type).")
 
     # Final metrics
-    average_optimizer_time_per_sample = (optimizer_time_cumulative / cumulative_optimizer_samples) * 1000.0
-    log_data_final = {
-        "average_optimizer_time_per_sample": average_optimizer_time_per_sample,
-    }
+    log_data_final["optimizer_time"] = optimizer_time_cumulative
 
     # Log the final optimizer metrics, if they exist
     if hasattr(optimizer, "log_metrics_end") and isinstance(optimizer.log_metrics_end, dict):

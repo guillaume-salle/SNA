@@ -13,7 +13,7 @@ dataset_params:
     - 1.0
     - 0.0
   bias: &bias_setting True
-  cov_type: "identity" 
+  cov_type: identity
   # cov_const:
   # diag:
 model: LinearRegression

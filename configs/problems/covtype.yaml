@@ -1,2 +1,9 @@
-dataset_name: covtype
-dataset_source: sklearn
+dataset: covtype
+dataset_params:
+  test_size: 0.2
+  random_state: 0
+
+model: LogisticRegression
+model_params:
+  bias: true
+  lambda_: 1e-4

@@ -1,13 +1,4 @@
-dataset: synthetic_linear_regression
+inherits_from: linear_d=100.yaml
 dataset_params:
-  n_dataset: 1e7
-  # true_theta: 
-  param_dim: 100
-  bias: &bias_setting True 
   cov_type: random
   cov_const: 1.0
-  # diag:
-model: LinearRegression
-model_params:
-  bias: *bias_setting
-radius: 1.0
