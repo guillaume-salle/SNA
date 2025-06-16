@@ -1,3 +1,4 @@
-inherits_from: logistic_random_d=100.yaml
+inherits_from: logistic_d=200.yaml
 dataset_params:
-  param_dim: 200
+  cov_type: random
+  cov_const: 1.0

@@ -1,4 +1,3 @@
-inherits_from: linear_random_d=100.yaml
+inherits_from: linear_random_d=200.yaml
 dataset_params:
-  param_dim: 200
   n_dataset: 1e7

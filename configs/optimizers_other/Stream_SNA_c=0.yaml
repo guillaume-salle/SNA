@@ -1,0 +1,4 @@
+inherits_from: SNA_base.yaml
+optimizer_params:
+  batch_size: "expr: d"
+  lr_const: 0.0

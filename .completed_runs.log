@@ -1,0 +1,94 @@
+logistic_random_d=200_N=1e6:
+    Stream_mSNA_Avg_ell^0,25_p^0,75_bb626110_0
+    Stream_mSNA_Avg_ell^0,5_p^0,5_299a042d_0
+    Stream_mSNA_Avg_full_9b3d7e64_0
+    Stream_mSNA_Avg_89e209fa_0
+    Stream_mSNA_ell^0,25_p^0,75_18c9bdab_0
+    Stream_mSNA_ell^0,5_p^0,5_7ecad3c2_0
+    Stream_mSNA_full_USNA_c152519c_0
+    Stream_mSNA_full_7eaf9fe8_0
+    Stream_mSNA_36afc296_0
+    Stream_SGD_Avg_49f66cc1_0
+    Stream_SGD_5af257ca_0
+    Stream_mSNA_Avg_ell^0,25_717f5cd3_0
+    Stream_mSNA_Avg_ell^0,5_bfe95929_0
+    Stream_mSNA_ell^0,25_35bf01fc_0
+    Stream_mSNA_ell^0,5_be1d625f_0
+    Stream_mSNA_ell^0,25_51ae5e19_0
+    Stream_mSNA_ell^0,5_0847bee3_0
+    Stream_mSNA_full_gamma=0,5_806f31b4_0
+    Stream_mSNA_full_gamma=0_ba76f379_0
+    Stream_mSNA_full_1db60d73_0
+    Stream_mSNA_1f9bedb0_0
+    Stream_SNA_d60a1c8a_0
+linear_random_d=200_N=1e6:
+    Stream_mSNA_Avg_ell^0,25_p^0,75_4f93de78_0
+    Stream_mSNA_Avg_ell^0,5_p^0,5_270fad3d_0
+    Stream_mSNA_Avg_full_c83b2ff7_0
+    Stream_mSNA_Avg_38bd50e6_0
+    Stream_mSNA_ell^0,25_p^0,75_6c3de627_0
+    Stream_mSNA_ell^0,5_p^0,5_9658e5d2_0
+    Stream_mSNA_full_USNA_dd0bf6fb_0
+    Stream_mSNA_full_e74fa0f2_0
+    Stream_mSNA_09d119ed_0
+    Stream_SGD_Avg_f938aa30_0
+    Stream_SGD_dfadbe6b_0
+    Stream_mSNA_Avg_ell^0,25_7bbe7050_0
+    Stream_mSNA_Avg_ell^0,5_98dea362_0
+    Stream_mSNA_ell^0,25_ca0796ef_0
+    Stream_mSNA_ell^0,5_c40be8bc_0
+logistic_random_d=200_N=1e6_r=0:
+    Stream_mSNA_ell^0,25_209105cf_0
+    Stream_mSNA_ell^0,5_f787a629_0
+    Stream_mSNA_full_gamma=0,5_9cabfde5_0
+    Stream_mSNA_full_USNA_9c7c5491_0
+    Stream_mSNA_full_9548d752_0
+    Stream_mSNA_6791dc4a_0
+    Stream_SGD_421a691d_0
+    Stream_SNA_64a1e219_0
+logistic_random_d=200_N=1e7_r=0:
+    Stream_mSNA_ell^0,25_135374c0_0
+    Stream_mSNA_ell^0,5_5dae6e39_0
+    Stream_mSNA_full_gamma=0,5_4d653d04_0
+    Stream_mSNA_full_USNA_eacf6c59_0
+    Stream_mSNA_full_9de8e93a_0
+    Stream_mSNA_6280c6e5_0
+    Stream_SGD_3d985667_0
+    Stream_SNA_bf781460_0
+    Stream_SNA_a9104177_0
+    Stream_SNA_c=0_7f99897c_0
+logistic_random_d=2_N=1e6_r=0:
+    Stream_SNA_c=0_4e84bdc4_0
+logistic_random_d=20_N=1e6_r=0:
+    Stream_SNA_c=0_435d7cb5_0
+logistic_random_d=10_N=1e6_r=0:
+    Stream_SNA_c=0_1f308b20_0
+logistic_random_d=4_N=1e6_r=0:
+    Stream_SNA_c=0_d43f051d_0
+logistic_random_d=6_N=1e6_r=0:
+    Stream_SNA_c=0_14d2cfae_0
+logistic_random_d=400_N=1e7:
+    Stream_mSNA_ell^0,25_4b34a4f4_0
+    Stream_mSNA_ell^0,5_27c91695_0
+    Stream_mSNA_full_gamma=0,5_7e3909ea_0
+    Stream_mSNA_full_gamma=0_04812c57_0
+    Stream_mSNA_full_ca75c865_0
+    Stream_mSNA_f2bed91c_0
+    Stream_SGD_b69b1961_0
+    Stream_SNA_de931c31_0
+logistic_random_d=200_N=1e7:
+    Stream_mSNA_ell^0,25_effb0ded_0
+    Stream_mSNA_ell^0,5_e0068094_0
+    Stream_mSNA_full_gamma=0,5_9ddc8f02_0
+    Stream_mSNA_full_gamma=0_93ce62b2_0
+    Stream_mSNA_full_c7d4cfb0_0
+    Stream_SGD_378653e3_0
+    Stream_SNA_fd1428b3_0
+    Stream_mSNA_Avg_ell^0,25_3368b1fc_0
+    Stream_mSNA_Avg_ell^0,5_03efd8eb_0
+    Stream_mSNA_Avg_full_4f72bc45_0
+    Stream_mSNA_Avg_58869d50_0
+    Stream_SGD_Avg_68a326bb_0
+    Stream_mSNA_gamma=0_da3f36da_0
+    Stream_mSNA_43920e56_0
+    Stream_mSNA_USNA_05fa94ca_0

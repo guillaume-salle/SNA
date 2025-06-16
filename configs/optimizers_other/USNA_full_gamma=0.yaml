@@ -1,5 +1,0 @@
-inherits_from: USNA.yaml
-optimizer_params:
-  version: full
-  lr_hess_exp: 0.0
-  lr_hess_add_iter: 20.0

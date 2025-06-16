@@ -16,7 +16,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from objective_functions import LinearRegression, LogisticRegression
-from optimizers import SGD, mSNA, BaseOptimizer
+from optimizers import SGD, mSNA, SNA, BaseOptimizer
 from datasets import generate_regression, load_dataset_from_source
 
 
@@ -265,8 +265,10 @@ class RunCompletionManager:
 def get_optimizer_class(optimizer_name: str) -> BaseOptimizer:
     if optimizer_name == "SGD":
         return SGD
-    elif optimizer_name == "USNA":
+    elif optimizer_name == "mSNA":
         return mSNA
+    elif optimizer_name == "SNA":
+        return SNA
     else:
         raise ValueError(f"Unknown optimizer specified in config: {optimizer_name}")
 
@@ -333,18 +335,15 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         n_train_set = dataset_params.get("n_dataset")
 
         if true_hessian is None and true_theta is not None:
-            print(
-                f"   Estimating true_hessian for {dataset_name} at true_theta as it was not returned by generate_regression..."
-            )
+            print(f"   Estimating true_hessian for {dataset_name} at true_theta as no close formula was provided...")
 
-            # --- Hessian Estimation Dataset ---
+            # --- Hessian Estimation ---
+            n_samples_for_hessian_estimation = int(1e6)
             # Use a large batch size for efficiency
             hessian_estimation_batch_size = 2048
-            # Cap the number of samples for Hessian estimation for efficiency and precision
-            n_samples_for_hessian_estimation = int(1e7)
 
             print(
-                f"   Using a temporary dataset of {n_samples_for_hessian_estimation} samples (batch size: {hessian_estimation_batch_size}) for this estimation."
+                f"   Using a temporary dataset of {n_samples_for_hessian_estimation:.0e} samples (batch size: {hessian_estimation_batch_size}) for this estimation."
             )
 
             # Create a temporary config for the Hessian dataset with the capped sample size
@@ -374,15 +373,24 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
                 pin_memory=(device == "cuda"),
             )
 
+            number_of_batches = 0
             for X_batch_hess_cpu, y_batch_hess_cpu in hessian_estimation_loader:
+                if X_batch_hess_cpu.shape[0] != hessian_estimation_batch_size:
+                    break
                 # Move data to the model device for the model's Hessian calculation
                 X_batch_hess, y_batch_hess = X_batch_hess_cpu.to(device), y_batch_hess_cpu.to(device)
 
                 batch_hess = model.hessian((X_batch_hess, y_batch_hess), true_theta)
-                accumulated_hessian += batch_hess * X_batch_hess.shape[0]
+                accumulated_hessian += batch_hess
+                number_of_batches += 1
 
-            true_hessian = accumulated_hessian / n_samples_for_hessian_estimation
-            print(f"   Finished estimating true_hessian. Averaged over {n_samples_for_hessian_estimation:.0e} samples.")
+            if number_of_batches == 0:
+                raise ValueError(
+                    "Hessian estimation did not process any batches. "
+                    "This is likely because n_samples_for_hessian_estimation is smaller than hessian_estimation_batch_size."
+                )
+            true_hessian = accumulated_hessian / number_of_batches
+            print(f"   Finished estimating true_hessian. Averaged over {number_of_batches} batches.")
 
     else:
         print(f"   Loading real dataset: {dataset_name}...")
@@ -402,6 +410,7 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         theta_init = torch.zeros(param_dim, device=device, dtype=torch.float32)
 
     # --- Setup: Optimizer ---
+    optimizer: BaseOptimizer
     optimizer_class = get_optimizer_class(optimizer_name)
     optimizer = optimizer_class(param=theta_init, obj_function=model, **optimizer_params)
 
@@ -428,13 +437,13 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         lambda_max_inv_hess = inv_hess_eigenvalues.max().item()
         print(f"   True Inv Hessian: lambda_min={lambda_min_inv_hess:.4f}, lambda_max={lambda_max_inv_hess:.4f}")
 
-        inv_hess_error_fro = torch.linalg.norm(true_inv_hessian - optimizer.matrix_not_avg, ord="fro").item() ** 2
-        inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix_not_avg, ord=2).item()
+        inv_hess_error_fro = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item() ** 2
+        inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
         log_data_initial["inv_hess_error_fro"] = inv_hess_error_fro
         log_data_initial["inv_hess_error_operator"] = inv_hess_error_operator
         if compute_inv_hess_error_avg:
-            inv_hess_error_fro_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item() ** 2
-            inv_hess_error_operator_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
+            inv_hess_error_fro_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix_avg, ord="fro").item() ** 2
+            inv_hess_error_operator_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix_avg, ord=2).item()
             log_data_initial["inv_hess_error_fro_avg"] = inv_hess_error_fro_avg
             log_data_initial["inv_hess_error_operator_avg"] = inv_hess_error_operator_avg
     wandb.log(log_data_initial)
@@ -511,14 +520,16 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
             log_data_step["estimation_error"] = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
 
         if compute_inv_hess_error:
-            inv_hess_error_fro = torch.linalg.norm(true_inv_hessian - optimizer.matrix_not_avg, ord="fro").item() ** 2
-            inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix_not_avg, ord=2).item()
+            inv_hess_error_fro = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item() ** 2
+            inv_hess_error_operator = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
             log_data_step["inv_hess_error_fro"] = inv_hess_error_fro
             log_data_step["inv_hess_error_operator"] = inv_hess_error_operator
 
             if compute_inv_hess_error_avg:
-                inv_hess_error_fro_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord="fro").item() ** 2
-                inv_hess_error_operator_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix, ord=2).item()
+                inv_hess_error_fro_avg = (
+                    torch.linalg.norm(true_inv_hessian - optimizer.matrix_avg, ord="fro").item() ** 2
+                )
+                inv_hess_error_operator_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix_avg, ord=2).item()
                 log_data_step["inv_hess_error_fro_avg"] = inv_hess_error_fro_avg
                 log_data_step["inv_hess_error_operator_avg"] = inv_hess_error_operator_avg
 

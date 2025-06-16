@@ -1,5 +1,5 @@
 inherits_from: SGD_Avg_base.yaml
-optimizer: "USNA"
+optimizer: "mSNA"
 optimizer_params:
   lr_hess_exp: 0.75
   lr_hess_const: "expr: float(d)"

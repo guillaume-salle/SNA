@@ -1,3 +1,4 @@
 inherits_from: mSNA_base.yaml
 optimizer_params:
   batch_size: "expr: d"
+  mask_size: "expr: int(pow(d, 0.5))"

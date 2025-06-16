@@ -179,7 +179,9 @@ def hard_matrix(d: int, cov_const: float | None = None, device: str = "cpu") -> 
     return matrix
 
 
-def random_matrix(d: int, cov_const: float | None = None, device: str = "cpu") -> torch.Tensor:
+def random_matrix(
+    d: int, cov_const: float | None = None, device: str = "cpu", generator: torch.Generator | None = None
+) -> torch.Tensor:
     if d == 0:
         return torch.empty((0, 0), device=device, dtype=torch.float32)
     if cov_const is None:
@@ -187,7 +189,7 @@ def random_matrix(d: int, cov_const: float | None = None, device: str = "cpu") -
     if cov_const <= 0:
         raise ValueError("cov_const (exponent) must be positive for this eigenvalue distribution.")
 
-    A = torch.randn(d, d, device=device, dtype=torch.float32)
+    A = torch.randn(d, d, device=device, dtype=torch.float32, generator=generator)
     Q, _ = torch.linalg.qr(A)
     Q = Q.to(dtype=torch.float32)
 
@@ -206,7 +208,12 @@ def random_matrix(d: int, cov_const: float | None = None, device: str = "cpu") -
 
 
 def generate_covariance_matrix(
-    feature_dim: int, cov_type: str, cov_const: float | None = None, diag: bool = False, device: str = "cpu"
+    feature_dim: int,
+    cov_type: str,
+    cov_const: float | None = None,
+    diag: bool = False,
+    device: str = "cpu",
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     if feature_dim < 0:
         raise ValueError(f"Feature dimension must be non-negative, got {feature_dim}")
@@ -226,7 +233,7 @@ def generate_covariance_matrix(
         elif cov_type == "hard":
             return hard_matrix(feature_dim, cov_const=cov_const, device=device)
         elif cov_type == "random":
-            return random_matrix(feature_dim, cov_const=cov_const, device=device)
+            return random_matrix(feature_dim, cov_const=cov_const, device=device, generator=generator)
     except Exception as e:
         raise RuntimeError(f"Error generating covariance matrix of type '{cov_type}': {str(e)}")
     raise ValueError(f"Unhandled covariance matrix type: {cov_type}")
@@ -288,7 +295,7 @@ def generate_regression(
         if actual_param_dim < 1 or (bias and actual_param_dim < 2):
             raise ValueError(f"param_dim must be at least 1 (bias=False) or 2 (bias=True), got {actual_param_dim}")
         feature_dim = actual_param_dim - 1 if bias else actual_param_dim
-        true_theta = torch.randn(actual_param_dim, dtype=torch.float32).to(device)
+        true_theta = torch.randn(actual_param_dim, dtype=torch.float32, generator=rng_data).to(device)
     else:
         if isinstance(true_theta_input, list):
             true_theta = torch.tensor(true_theta_input, dtype=torch.float32).to(device)
@@ -311,7 +318,12 @@ def generate_regression(
 
     # Covariance matrix is used by the generator, so it must be on the generator's device
     true_feature_covariance_matrix = generate_covariance_matrix(
-        feature_dim, cov_type=cov_type, cov_const=cov_const, diag=diag, device=data_gen_device
+        feature_dim,
+        cov_type=cov_type,
+        cov_const=cov_const,
+        diag=diag,
+        device=data_gen_device,
+        generator=rng_data,
     )
 
     dataset = RegressionIterableDataset(

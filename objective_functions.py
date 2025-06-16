@@ -237,7 +237,11 @@ class LogisticRegression(BaseObjectiveFunction):
         loss = F.binary_cross_entropy_with_logits(dot_product, y_shaped, reduction="mean")
 
         if self.lambda_ > 0:
-            loss += 0.5 * self.lambda_ * torch.norm(param, p=2) ** 2
+            if self.bias:
+                # Exclude the bias term from regularization
+                loss += 0.5 * self.lambda_ * torch.norm(param[:-1], p=2) ** 2
+            else:
+                loss += 0.5 * self.lambda_ * torch.norm(param, p=2) ** 2
         return loss
 
     def get_param_dim(self, data: Tuple[torch.Tensor, torch.Tensor]) -> int:
@@ -261,7 +265,11 @@ class LogisticRegression(BaseObjectiveFunction):
         # phi is shape (batch_size ,d+1) so phi.T is shape (d+1, batch_size)
         grad = torch.matmul(phi.T, sigmoid_dot_product - y_shaped) / batch_size
         if self.lambda_ > 0:
-            grad += self.lambda_ * param
+            if self.bias:
+                # Exclude the bias term from regularization
+                grad[:-1] += self.lambda_ * param[:-1]
+            else:
+                grad += self.lambda_ * param
         return grad
 
     def grad(self, data: Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor) -> torch.Tensor:
@@ -292,7 +300,10 @@ class LogisticRegression(BaseObjectiveFunction):
         # phi.T shape: (d+1, batch_size), weights.unsqueeze(0) shape: (1, batch_size) -> result (d+1, d+1)
         hessian = torch.matmul(phi.T * weights.unsqueeze(0), phi) / batch_size
         if self.lambda_ > 0:
-            hessian += self.lambda_ * torch.eye(phi.shape[1], device=phi.device, dtype=phi.dtype)
+            if self.bias:
+                hessian.diagonal()[:-1].add_(self.lambda_)
+            else:
+                hessian.diagonal().add_(self.lambda_)
 
         if return_grad:
             grad = self._grad_internal(y, phi, sigmoid_dot_product, param)
@@ -315,17 +326,29 @@ class LogisticRegression(BaseObjectiveFunction):
 
         weights = sigmoid_dot_product * (1 - sigmoid_dot_product)  # p(1-p), shape (batch_size,)
 
-        if not columns.numel():  # if columns is empty, return an empty tensor
-            hessian_cols = torch.empty((phi.shape[1], 0), device=phi.device, dtype=phi.dtype)
+        if not columns.numel():
+            raise ValueError("columns is empty")
         else:
             phi_selected_cols = phi[:, columns]
             weighted_phi_selected_cols = weights.unsqueeze(1) * phi_selected_cols
             hessian_cols = torch.matmul(phi.T, weighted_phi_selected_cols) / batch_size
             if self.lambda_ > 0:
+                if self.bias:
+                    # Identify which of the selected columns is the bias column
+                    is_bias_col_mask = columns == phi.shape[1] - 1
+                    # Create a tensor of lambda values, setting it to 0 for the bias column
+                    reg_values = torch.full_like(columns, self.lambda_, dtype=phi.dtype)
+                    reg_values[is_bias_col_mask] = 0.0
+                else:
+                    reg_values = torch.full_like(columns, self.lambda_, dtype=phi.dtype)
+
+                # Add the regularization values to the diagonal entries of the computed columns
                 num_selected_cols = columns.shape[0]
                 if num_selected_cols > 0:
+                    row_indices = columns
                     col_indices = torch.arange(num_selected_cols, device=phi.device)
-                    hessian_cols[columns, col_indices] += self.lambda_
+                    # This adds reg_values[i] to hessian_cols[row_indices[i], col_indices[i]]
+                    hessian_cols.index_put_((row_indices, col_indices), reg_values, accumulate=True)
 
         if return_grad:
             grad = self._grad_internal(y, phi, sigmoid_dot_product, param)
@@ -336,24 +359,27 @@ class LogisticRegression(BaseObjectiveFunction):
         self,
         data: Tuple[torch.Tensor, torch.Tensor],
         param: torch.Tensor,
-        vector: torch.Tensor,
+        vectors: torch.Tensor,
         return_grad: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """Compute the Hessian-vector product."""
+        """Compute the Hessian-vector product, with k vectors (vectors.shape = (param_dim, k))."""
         X, y = data
         batch_size = X.size(0)
-        phi = self._add_bias(X)
-        dot_product = torch.matmul(phi, param)
-        sigmoid_dot_product = torch.sigmoid(dot_product)  # Compute once
+        phi = self._add_bias(X)  # Shape (batch_size, param_dim)
+        dot_product = torch.matmul(phi, param)  # shape (batch_size,)
+        sigmoid_dot_product = torch.sigmoid(dot_product)  # shape (batch_size,)
 
-        weights = sigmoid_dot_product * (1 - sigmoid_dot_product)  # p(1-p)
+        weights = sigmoid_dot_product * (1 - sigmoid_dot_product)  # shape (batch_size,)
 
-        weighted_phi_v = torch.matmul(phi, vector)  # (batch_size, k)
-        weighted_phi_v = weights.unsqueeze(1) * weighted_phi_v  # (batch_size, k)
+        # weights will be broadcast to shape (batch_size, k)
+        weighted_phi_v = weights.unsqueeze(1) * torch.matmul(phi, vectors)  # (batch_size, k)
         hessian_v = torch.matmul(phi.T, weighted_phi_v) / batch_size  # (param_dim, k)
 
         if self.lambda_ > 0:
-            hessian_v += self.lambda_ * vector  # (param_dim, k)
+            if self.bias:
+                hessian_v[:-1, :] += self.lambda_ * vectors[:-1, :]
+            else:
+                hessian_v += self.lambda_ * vectors
 
         if return_grad:
             grad = self._grad_internal(y, phi, sigmoid_dot_product, param)

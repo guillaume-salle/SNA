@@ -1,3 +1,0 @@
-inherits_from: USNA.yaml
-optimizer_params:
-  version: original_rademacher_vector
