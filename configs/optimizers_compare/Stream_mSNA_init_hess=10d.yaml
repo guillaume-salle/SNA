@@ -1,0 +1,9 @@
+inherits_from: Stream_mSNA.yaml
+
+optimizer_params:
+  # Enable initial hessian inversion
+  init_hess_inv: true
+  # Number of samples to use for the estimation
+  init_hess_inv_samples: "expr: 10*d" 
+  # Regularization for the inversion
+  init_hess_inv_reg: "expr: float(1e-4)"

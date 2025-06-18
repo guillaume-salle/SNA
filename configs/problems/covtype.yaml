@@ -1,7 +1,10 @@
 dataset: covtype
 dataset_params:
   test_size: 0.2
-  random_state: 0
+  val_size: 0.0
+
+log_test_every_n_batches: 200
+log_train_every_n_batches: 200
 
 model: LogisticRegression
 model_params:

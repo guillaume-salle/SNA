@@ -4,6 +4,7 @@ from typing import Tuple
 import math
 from objective_functions import BaseObjectiveFunction
 import torch.nn.functional as F
+import traceback
 
 
 class BaseOptimizer(ABC):
@@ -182,6 +183,10 @@ class mSNA(BaseOptimizer):
         log_weight_matrix: float = BaseOptimizer.DEFAULT_LOG_WEIGHT,
         version: str = "mask",
         mask_size: int = 1,
+        # Params for initial hessian inversion
+        init_hess_inv: bool = False,
+        init_hess_inv_samples: int = 10000,
+        init_hess_inv_reg: float = 1e-4,
     ):
         super().__init__(
             param=param,
@@ -206,6 +211,16 @@ class mSNA(BaseOptimizer):
         self.version = version
 
         self.dim = self.param.shape[0]
+
+        self.is_warming_up = init_hess_inv
+        if self.is_warming_up:
+            print(f"   [mSNA] Optimizer entering warm-up phase to estimate initial Hessian.")
+            print(f"   [mSNA] Will accumulate {init_hess_inv_samples} samples before computing Hessian.")
+            self.warmup_samples_processed = 0
+            self.init_hess_inv_samples = init_hess_inv_samples
+            self.init_hess_inv_reg = init_hess_inv_reg
+            self.warmup_data_batches = []
+
         # IMPORTANT: When averaged_matrix is False, self.matrix is a direct reference
         # to self.matrix_not_avg. To maintain this link, all updates to
         # self.matrix_not_avg MUST be performed using in-place operations
@@ -214,7 +229,7 @@ class mSNA(BaseOptimizer):
         # will break this reference.
         self.matrix = torch.eye(self.dim, device=self.device, dtype=self.param.dtype)
         if averaged_matrix:
-            self.matrix_avg = self.matrix.clone()
+            self.matrix_avg = torch.eye(self.dim, device=self.device, dtype=self.param.dtype)
             self.sum_weights_matrix = 0.0
         else:
             self.matrix_avg = self.matrix
@@ -237,16 +252,101 @@ class mSNA(BaseOptimizer):
 
         self.log_metrics_end = {"skip_update": 0}
 
+    def _complete_warmup(self):
+        """Finalizes the warm-up phase by computing and setting the initial matrix."""
+        print(f"   [mSNA] Warm-up complete. Processed {self.warmup_samples_processed} samples.")
+        if not self.warmup_data_batches:
+            print("   [mSNA] WARNING: No samples accumulated during warm-up. Using identity matrix.")
+        else:
+            try:
+                # --- Generic Data Concatenation ---
+                first_batch = self.warmup_data_batches[0]
+                warmup_data_for_hessian: torch.Tensor | Tuple[torch.Tensor, ...]
+
+                if isinstance(first_batch, tuple):
+                    # Data is a tuple of tensors, e.g., (X, y)
+                    # We need to concatenate each part of the tuple separately
+                    num_tensors_in_batch = len(first_batch)
+                    concatenated_tensors = []
+                    for i in range(num_tensors_in_batch):
+                        tensors_to_cat = [batch[i] for batch in self.warmup_data_batches]
+                        concatenated_tensors.append(torch.cat(tensors_to_cat, dim=0))
+                    warmup_data_for_hessian = tuple(concatenated_tensors)
+                    print(
+                        f"   [mSNA] Computing Hessian on accumulated data tuple. First tensor shape: {concatenated_tensors[0].shape}. This may use significant memory."
+                    )
+                else:
+                    # Data is a single tensor
+                    warmup_data_for_hessian = torch.cat(self.warmup_data_batches, dim=0)
+                    print(
+                        f"   [mSNA] Computing Hessian on accumulated data tensor of shape {warmup_data_for_hessian.shape}. This may use significant memory."
+                    )
+
+                # Compute Hessian once on the full accumulated data.
+                # The objective function's hessian method already averages by batch size.
+                avg_hessian = self.obj_function.hessian(warmup_data_for_hessian, self.param)
+
+                # Regularize before inverting
+                avg_hessian.diagonal().add_(self.init_hess_inv_reg)
+
+                initial_matrix = torch.linalg.inv(avg_hessian)
+
+                self.matrix.copy_((initial_matrix + initial_matrix.T) / 2)  # Symmetrize
+                if self.averaged_matrix:
+                    self.matrix_avg.copy_(self.matrix)
+
+                # Optional: Print the eigenvalues of the initial matrix
+                print("   [mSNA] Successfully initialized matrix with inverse Hessian estimate.")
+                eigenvalues = torch.linalg.eigvalsh(self.matrix)
+                print(
+                    f"   [mSNA] Initial matrix condition number: {eigenvalues.max()/eigenvalues.min():.2e} (min={eigenvalues.min():.4f}, max={eigenvalues.max():.4f})"
+                )
+
+            except Exception as e:
+                print(
+                    f"   [mSNA] WARNING: Failed to compute or invert Hessian during warm-up: {e}. Falling back to Identity matrix."
+                )
+                traceback.print_exc()
+
+        # Clean up warm-up attributes to free memory
+        del self.warmup_data_batches
+        del self.warmup_samples_processed
+        del self.init_hess_inv_samples
+        del self.init_hess_inv_reg
+        self.is_warming_up = False
+
+        # If matrix averaging is on, reset the average matrix to the new initial matrix
+        if self.averaged_matrix:
+            self.matrix_avg.copy_(self.matrix)
+            self.sum_weights_matrix = 0.0
+
     def step(
         self,
         data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
     ):
         """
         Perform one optimization step using PyTorch tensors.
-
-        Args:
-                data (torch.Tensor | Tuple[torch.Tensor, torch.Tensor]): The input data for the optimization step.
+        Includes a warm-up phase for initial Hessian estimation if configured.
         """
+        self.log_metrics = {}
+        # --- Warm-up Phase ---
+        if self.is_warming_up:
+            # Determine batch size from the first tensor in data
+            current_batch_size = data[0].size(0) if isinstance(data, tuple) else data.size(0)
+
+            # Accumulate data batches
+            self.warmup_data_batches.append(data)
+            self.warmup_samples_processed += current_batch_size
+
+            # Check if warm-up is complete
+            if self.warmup_samples_processed >= self.init_hess_inv_samples:
+                self._complete_warmup()
+
+            # During warm-up, we do not update parameters, so we return here.
+            # self.n_iter is also not incremented yet.
+            return
+
+        # --- Normal Optimization Step ---
         self.n_iter += 1
 
         # Update the hessian estimate and get the gradient from intermediate computation
@@ -293,7 +393,6 @@ class mSNA(BaseOptimizer):
         norm_hessian = torch.linalg.norm(hessian, ord=2)
 
         # Log the norm of the hessian to see its behavior
-        self.log_metrics = {}
         self.log_metrics["norm_hessian"] = norm_hessian
 
         if (lr_hessian / 2) * norm_hessian < self.CONST_CONDITION:
@@ -367,7 +466,10 @@ class mSNA(BaseOptimizer):
                 )
                 hessian_column = hessian_column.squeeze()
 
-            if (lr_hessian / 2) * torch.linalg.vector_norm(hessian_column) < self.CONST_CONDITION:
+            norm_hessian = torch.linalg.vector_norm(hessian_column)
+            self.log_metrics["norm_hessian"] = norm_hessian
+
+            if (lr_hessian / 2) * norm_hessian < self.CONST_CONDITION:
                 # Let c = A h_i. All operations are on vectors, which is faster.
                 c_vector = torch.matmul(self.matrix, hessian_column)
 
@@ -405,7 +507,10 @@ class mSNA(BaseOptimizer):
                     data, self.param_not_avg, masks, return_grad=True
                 )
 
-            if (lr_hessian / 2) * torch.linalg.norm(hessian_columns, ord="fro") < self.CONST_CONDITION:
+            norm_hessian = torch.linalg.norm(hessian_columns, ord=2)
+            self.log_metrics["norm_hessian"] = norm_hessian
+
+            if (lr_hessian / 2) * norm_hessian < self.CONST_CONDITION:
                 # --- 1. First-Order Update: A_new = A - lr(AHM + MHA) ---
                 matrix_hessian_columns = torch.matmul(self.matrix, hessian_columns)
                 # Update columns
@@ -489,7 +594,10 @@ class mSNA(BaseOptimizer):
 
         lr_hessian = self.lr_hess_const / (self.n_iter**self.lr_hess_exp + self.lr_hess_add)
 
-        if (lr_hessian / 2) * torch.linalg.norm(hessian_V, ord="fro") < self.CONST_CONDITION:
+        norm_hessian = torch.linalg.norm(hessian_V, ord=2)
+        self.log_metrics["norm_hessian"] = norm_hessian
+
+        if (lr_hessian / 2) * norm_hessian < self.CONST_CONDITION:
             # A_new = A_old - lr(A_old H V V^T + V V^T H^T A_old) + lr^2 V (V^T H^T A_old H V) V^T + 2lr P
             A_H_v_vT = torch.linalg.multi_dot((self.matrix, hessian_V, vector_V.T))  # A H V V^T
             self.matrix.add_((A_H_v_vT + A_H_v_vT.T), alpha=-lr_hessian / 2)
@@ -576,6 +684,7 @@ class SNA(BaseOptimizer):
         Args:
                 data (torch.Tensor | Tuple[torch.Tensor, torch.Tensor]): The input data for the optimization step.
         """
+        self.log_metrics = {}
         self.n_iter += 1
 
         # Update the hessian estimate and get the gradient from intermediate computation
@@ -612,4 +721,12 @@ class SNA(BaseOptimizer):
         self.sum_weights_hessian += weight
         self.hessian_bar.add_((hessian - self.hessian_bar), alpha=(weight / self.sum_weights_hessian))
         self.matrix = torch.linalg.inv(self.hessian_bar)
+
+        norm_hessian = torch.linalg.norm(hessian, ord=2)
+        self.log_metrics["norm_hessian"] = norm_hessian
+        norm_hessian_bar = torch.linalg.norm(self.hessian_bar, ord=2)
+        self.log_metrics["SNA_norm_hessian_bar"] = norm_hessian_bar
+        norm_matrix = torch.linalg.norm(self.matrix, ord=2)
+        self.log_metrics["SNA_norm_matrix"] = norm_matrix
+
         return grad

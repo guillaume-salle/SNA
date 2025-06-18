@@ -1,4 +1,4 @@
 inherits_from: linear_d=200.yaml
 dataset_params:
   cov_type: random
-  cov_const: 1.0
+  cov_const: 100.0

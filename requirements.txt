@@ -2,4 +2,8 @@ torch
 wandb
 PyYAML
 tqdm
-numpy 
+numpy
+scikit-learn
+openml
+pandas
+torchvision

@@ -15,7 +15,7 @@ import collections.abc  # For deep_merge
 import torch
 from torch.utils.data import DataLoader
 
-from objective_functions import LinearRegression, LogisticRegression
+from objective_functions import LinearRegression, LogisticRegression, BaseObjectiveFunction
 from optimizers import SGD, mSNA, SNA, BaseOptimizer
 from datasets import generate_regression, load_dataset_from_source
 
@@ -285,6 +285,58 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         project_name (str): The name of the project for logging completion.
     """
 
+    # --- Helper Function for Evaluation ---
+    def _evaluate_on_set(
+        eval_set: torch.utils.data.Dataset,
+        model: BaseObjectiveFunction,
+        param: torch.Tensor,
+        device: str,
+        model_name: str,
+        eval_batch_size: int = 512,
+        set_name: str = "test",
+        subset_size: int | None = None,
+    ) -> dict:
+        """Helper to evaluate loss and accuracy on a given dataset or a subset of it."""
+        if eval_set is None or len(eval_set) == 0:
+            return {}
+
+        sampler = None
+        if subset_size and subset_size < len(eval_set):
+            # Use a random subset of the data for evaluation
+            indices = torch.randperm(len(eval_set))[:subset_size]
+            sampler = torch.utils.data.SubsetRandomSampler(indices)
+            total_samples = subset_size
+        else:
+            total_samples = len(eval_set)
+
+        eval_loader = DataLoader(eval_set, batch_size=eval_batch_size, pin_memory=(device == "cuda"), sampler=sampler)
+        total_loss = 0.0
+        all_predictions = []
+        all_targets = []
+
+        with torch.no_grad():
+            for X_batch_cpu, y_batch_cpu in eval_loader:
+                X_batch, y_batch = X_batch_cpu.to(device), y_batch_cpu.to(device)
+                loss = model((X_batch, y_batch), param)
+                total_loss += loss.item() * X_batch.size(0)
+
+                if model_name == "LogisticRegression":
+                    phi_batch = model._add_bias(X_batch)
+                    logits = torch.matmul(phi_batch, param)
+                    predictions = (torch.sigmoid(logits) > 0.5).float()
+                    all_predictions.append(predictions.cpu())
+                    all_targets.append(y_batch_cpu.squeeze())
+
+        metrics = {}
+        if total_samples > 0:
+            metrics[f"{set_name}_loss"] = total_loss / total_samples
+            if all_predictions:
+                predictions_tensor = torch.cat(all_predictions)
+                targets_tensor = torch.cat(all_targets)
+                correct_predictions = (predictions_tensor == targets_tensor).sum().item()
+                metrics[f"{set_name}_accuracy"] = correct_predictions / total_samples
+        return metrics
+
     # --- Extract Parameters ---
     optimizer_params = optimizer_config.get("optimizer_params")
     device = optimizer_params.get("device")  # Should be present due to check in main
@@ -294,6 +346,8 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
     dataset_params = problem_config.get("dataset_params")
     model_name = problem_config.get("model")
     model_params = problem_config.get("model_params")
+    log_test_every_n_batches = problem_config.get("log_test_every_n_batches", 0)
+    log_train_every_n_batches = problem_config.get("log_train_every_n_batches", 0)
 
     # --- Setup: Model ---
     # Instantiate the model early, as it's needed for Hessian estimation.
@@ -311,6 +365,7 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
 
     param_dim: int
     train_set: torch.utils.data.Dataset
+    val_set: torch.utils.data.Dataset | None = None  # Not used for now
     test_set: torch.utils.data.Dataset | None = None
 
     if dataset_name in ["synthetic_linear_regression", "synthetic_logistic_regression"]:
@@ -394,10 +449,17 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
 
     else:
         print(f"   Loading real dataset: {dataset_name}...")
-        train_set, test_set, param_dim, n_train_set, n_test_set = load_dataset_from_source(
-            dataset_name=dataset_name, device=device, **dataset_params
-        )
+        loaded_data = load_dataset_from_source(dataset_name=dataset_name, random_state=seed, **dataset_params)
+        train_set = loaded_data["train_dataset"]
+        val_set = loaded_data["val_dataset"]
+        test_set = loaded_data["test_dataset"]
+        n_train_set = loaded_data["n_train"]
+        n_test_set = loaded_data["n_test"]
+        number_features = loaded_data["number_features"]
+
         true_theta, true_hessian = None, None
+        bias = problem_config["model_params"].get("bias")
+        param_dim = number_features + 1 if bias else number_features
 
     # Initialize theta_init on a sphere of 'radius' around true_theta
     if true_theta is not None:
@@ -446,15 +508,22 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
             inv_hess_error_operator_avg = torch.linalg.norm(true_inv_hessian - optimizer.matrix_avg, ord=2).item()
             log_data_initial["inv_hess_error_fro_avg"] = inv_hess_error_fro_avg
             log_data_initial["inv_hess_error_operator_avg"] = inv_hess_error_operator_avg
+
+    # Initial test set evaluation
+    if test_set is not None:
+        initial_test_metrics = _evaluate_on_set(test_set, model, theta_init, device, model_name, set_name="test")
+        log_data_initial.update(initial_test_metrics)
+
     wandb.log(log_data_initial)
 
     # --- Training Loop (No separate warm-up phase) ---
     # The dataloader will use the `train_set` which is already configured
     # with its own independent, seeded generator (`rng_train`). No further seeding is needed here.
+    is_iterable_dataset = isinstance(train_set, torch.utils.data.IterableDataset)
     dataloader = DataLoader(
         train_set,
-        batch_size=None,  # Correctly None for IterableDataset yielding batches
-        shuffle=False,
+        batch_size=None if is_iterable_dataset else batch_size,
+        shuffle=False,  # Keep to False for reproducibility across dataset types
         pin_memory=(device == "cuda"),
     )
 
@@ -477,10 +546,11 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         data_iterator, total=total_batches_in_dataset, desc="   Optimization", unit="batch", leave=True
     )
 
-    for _, data_batch in enumerate(progress_bar_iterator):
-        # data_batch is a tuple of CPU tensors yielded from our dataset
-        X_cpu, y_cpu = data_batch
-        current_batch_size = X_cpu.size(0)
+    for batch_idx, data_batch_cpu in enumerate(progress_bar_iterator):
+        # data_batch_cpu is a tensor or tuple of tensors on the CPU
+        current_batch_size = (
+            data_batch_cpu[0].size(0) if isinstance(data_batch_cpu, (list, tuple)) else data_batch_cpu.size(0)
+        )
 
         current_step_duration: float
         if device == "cuda":
@@ -489,9 +559,12 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
             end_event = torch.cuda.Event(enable_timing=True)
 
             start_event.record()
-            X = X_cpu.to(device)
-            y = y_cpu.to(device)
-            optimizer.step((X, y))
+            if isinstance(data_batch_cpu, (list, tuple)):
+                data_on_device = tuple(item.to(device) for item in data_batch_cpu)
+            else:
+                data_on_device = data_batch_cpu.to(device)
+
+            optimizer.step(data_on_device)
             end_event.record()
 
             torch.cuda.synchronize()
@@ -500,10 +573,15 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
             # For CPU, the .to(device) is a no-op but we include it for structural consistency.
             # The timing correctly captures just the optimizer step.
             step_start_cpu_time = time.perf_counter()
-            X = X_cpu.to(device)
-            y = y_cpu.to(device)
-            optimizer.step((X, y))
+
+            if isinstance(data_batch_cpu, (list, tuple)):
+                data_on_device = tuple(item.to(device) for item in data_batch_cpu)
+            else:
+                data_on_device = data_batch_cpu.to(device)
+
+            optimizer.step(data_on_device)
             step_end_cpu_time = time.perf_counter()
+
             current_step_duration = step_end_cpu_time - step_start_cpu_time
 
         optimizer_time_cumulative += current_step_duration
@@ -536,6 +614,28 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         if hasattr(optimizer, "log_metrics"):
             for key, value in optimizer.log_metrics.items():
                 log_data_step[f"opt_{key}"] = value
+
+        # Periodic test set evaluation
+        if log_test_every_n_batches > 0 and (batch_idx + 1) % log_test_every_n_batches == 0:
+            if test_set is not None:
+                test_metrics = _evaluate_on_set(test_set, model, optimizer.param, device, model_name, set_name="test")
+                log_data_step.update(test_metrics)
+
+        # Periodic train set evaluation
+        if log_train_every_n_batches > 0 and (batch_idx + 1) % log_train_every_n_batches == 0:
+            if train_set is not None:
+                # Use a subset of the train set for faster evaluation
+                train_eval_metrics = _evaluate_on_set(
+                    train_set,
+                    model,
+                    optimizer.param,
+                    device,
+                    model_name,
+                    set_name="train",
+                    subset_size=int(1e5),
+                )
+                log_data_step.update(train_eval_metrics)
+
         wandb.log(log_data_step)
 
     final_wall_time = time.time() - start_time
@@ -552,52 +652,14 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         # Compute and log test accuracy if test_set is available
         if test_set is not None:
             print(f"   Calculating accuracy and loss on the test set...")
-            test_loader = DataLoader(test_set, batch_size=256)  # Use a larger batch for eval
-
-            all_predictions = []
-            all_targets = []
-            total_loss = 0.0
-            with torch.no_grad():
-                for X_batch_cpu, y_batch_cpu in test_loader:
-                    X_batch, y_batch = X_batch_cpu.to(device), y_batch_cpu.to(device)
-
-                    # --- Loss Calculation ---
-                    # The model is the objective function, call it directly.
-                    # It returns loss averaged over the batch, so we multiply by batch size to get total.
-                    loss = model((X_batch, y_batch), optimizer.param)
-                    total_loss += loss.item() * X_batch.size(0)
-
-                    # --- Accuracy Calculation (currently only for Logistic Regression) ---
-                    if model_name == "LogisticRegression":
-                        phi_batch = model._add_bias(X_batch)
-                        logits = torch.matmul(phi_batch, optimizer.param)
-                        predictions = (torch.sigmoid(logits) > 0.5).float()
-                        all_predictions.append(predictions.cpu())
-                        all_targets.append(y_batch_cpu.squeeze())
-                    else:
-                        # For other models, we can still calculate loss, but accuracy logic is specific.
-                        # We just pass here and don't populate accuracy metrics.
-                        pass
-
-            # --- Log Final Metrics ---
-            total_samples = len(test_set)
-            if total_samples > 0:
-                # Log average test loss
-                average_loss = total_loss / total_samples
-                print(f"   Test Set Avg Loss: {average_loss:.4f}")
-                log_data_final["test_set_loss"] = average_loss
-
-            if all_predictions and all_targets:
-                # Log test accuracy
-                predictions_tensor = torch.cat(all_predictions)
-                targets_tensor = torch.cat(all_targets)
-                correct_predictions = (predictions_tensor == targets_tensor).sum().item()
-                accuracy = correct_predictions / total_samples if total_samples > 0 else 0.0
-
-                print(f"   Test Set Accuracy: {accuracy:.4f} ({correct_predictions}/{total_samples})")
-                log_data_final["test_set_accuracy"] = accuracy
-            else:
-                print(f"   Skipped test set accuracy calculation (not applicable for this model type).")
+            final_test_metrics = _evaluate_on_set(test_set, model, optimizer.param, device, model_name, set_name="test")
+            for key, value in final_test_metrics.items():
+                # Strip prefix for cleaner final print summary
+                metric_name = key.replace("test_", "")
+                print(f"   Test Set {metric_name.capitalize()}: {value:.4f}")
+                log_data_final[key] = value
+        else:
+            print(f"   Skipped test set accuracy calculation (not applicable for this model type).")
 
     # Final metrics
     log_data_final["optimizer_time"] = optimizer_time_cumulative
@@ -769,21 +831,56 @@ if __name__ == "__main__":
         f"Attempting to load problem configuration: '{problem_config_argument}' (resolved to: '{actual_problem_config_filepath}')"
     )
     problem_config = load_config(actual_problem_config_filepath)
+    dataset = problem_config.get("dataset")
+    dataset_params = problem_config.get("dataset_params")
+
+    # Convert n_dataset to int if it exists in the problem config, to accept float values like 1e6
+    if "n_dataset" in dataset_params:
+        try:
+            current_n_dataset = int(float(dataset_params["n_dataset"]))
+            dataset_params["n_dataset"] = current_n_dataset  # Ensure it's updated in dict passed
+            print(f"Dataset size: {current_n_dataset}")
+        except ValueError:
+            print(f"!!! ERROR: Invalid value for 'n_dataset' in problem_config {args.config}. Exiting. !!!")
+            exit(1)
+
+    # Get param_dim for real datasets
+    if "synthetic" not in dataset:
+        if "number_features" in dataset_params:
+            number_features = dataset_params["number_features"]
+        else:
+            # A fixed random_state is fine here since it's just for shape inference.
+            loaded_data = load_dataset_from_source(dataset_name=dataset, random_state=0, **dataset_params)
+            number_features = loaded_data["number_features"]
+            print(f"Number of features inferred from dataset: {number_features}")
+            del loaded_data
+        bias = problem_config["model_params"].get("bias")
+        # We update dataset_params directly, which will be available in the context.
+        dataset_params["param_dim"] = number_features + 1 if bias else number_features
+        print(
+            f"Param dimension set to {dataset_params['param_dim']} (bias: {bias}, number of features: {number_features})"
+        )
 
     # Create context from problem config for expression evaluation
     context = {}
-    if "dataset_params" in problem_config:
-        if "true_theta" in problem_config["dataset_params"]:
-            # If true_theta is provided, use its length for d
-            true_theta = problem_config["dataset_params"]["true_theta"]
-            if isinstance(true_theta, list):
-                context["d"] = len(true_theta)
-            else:
-                raise ValueError("true_theta must be a list in the config file")
-        elif "param_dim" in problem_config["dataset_params"]:
-            context["d"] = problem_config["dataset_params"]["param_dim"]
-        if "n_dataset" in problem_config["dataset_params"]:
-            context["n"] = problem_config["dataset_params"]["n_dataset"]
+    if "true_theta" in problem_config["dataset_params"]:
+        # If true_theta is provided, use its length for d
+        true_theta = problem_config["dataset_params"]["true_theta"]
+        if isinstance(true_theta, list):
+            context["d"] = len(true_theta)
+        else:
+            raise ValueError("true_theta must be a list in the config file")
+    elif "param_dim" in problem_config["dataset_params"]:
+        context["d"] = problem_config["dataset_params"]["param_dim"]
+    else:
+        raise ValueError(
+            "Either 'true_theta' or 'param_dim' must be specified in the dataset_params of the problem config."
+        )
+    if "n_dataset" in problem_config["dataset_params"]:
+        context["n"] = problem_config["dataset_params"]["n_dataset"]
+    else:
+        # raise ValueError("n_dataset must be specified in the dataset_params of the problem config.")
+        pass
 
     # --- Process optimizer arguments ---
     optimizer_config_file_args = []
@@ -819,28 +916,6 @@ if __name__ == "__main__":
 
     # --- Instantiate Completion Manager (once) ---
     completion_manager = RunCompletionManager()
-
-    # --- Determine param_dim for batch_size defaulting (if needed) ---
-    param_dim_for_config: int
-    dataset_params = problem_config.get("dataset_params", {})
-    if dataset_params.get("true_theta") is not None:
-        param_dim_for_config = len(dataset_params["true_theta"])
-    elif dataset_params.get("param_dim") is not None:
-        param_dim_for_config = int(dataset_params["param_dim"])
-    else:
-        raise ValueError(
-            "Cannot determine param_dim from problem_config for batch_size setup. "
-            "Please provide 'true_theta' or 'param_dim' in dataset_params."
-        )
-
-    if "dataset_params" in problem_config and "n_dataset" in problem_config["dataset_params"]:
-        try:
-            current_n_dataset = int(float(problem_config["dataset_params"]["n_dataset"]))
-            problem_config["dataset_params"]["n_dataset"] = current_n_dataset  # Ensure it's updated in dict passed
-            print(f"Dataset size: {current_n_dataset}")
-        except ValueError:
-            print(f"!!! ERROR: Invalid value for 'n_dataset' in problem_config {args.config}. Exiting. !!!")
-            exit(1)
 
     # --- Loop over each optimizer configuration argument ---
     for optimizer_file_argument in optimizer_config_file_args:

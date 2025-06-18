@@ -1,4 +1,0 @@
-inherits_from: mSNA_base.yaml
-optimizer_params:
-  batch_size: "expr: d"
-  version: "mask_USNA"

@@ -68,7 +68,7 @@ class LinearRegression(BaseObjectiveFunction):
     Linear Regression class using PyTorch.
     """
 
-    def __init__(self, bias: bool = True):
+    def __init__(self, bias: bool):
         self.bias = bias
         self.name = "Linear Regression"
 
@@ -213,10 +213,10 @@ class LogisticRegression(BaseObjectiveFunction):
     Use Ridge regularization with lambda_ as the regularization parameter.
     """
 
-    def __init__(self, bias: bool = True, lambda_: float = 0.0):
+    def __init__(self, bias: bool, lambda_: float = 0.0):
         self.bias = bias
         self.name = "Logistic Regression"
-        self.lambda_ = lambda_
+        self.lambda_ = float(lambda_)
 
     def __call__(self, data: Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor) -> torch.Tensor:
         """

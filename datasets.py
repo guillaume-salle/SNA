@@ -6,6 +6,10 @@ import math
 from sklearn.datasets import fetch_covtype
 from sklearn.model_selection import train_test_split
 import numpy as np
+import openml
+import pandas as pd
+from torchvision import datasets as tv_datasets
+from torchvision.transforms import ToTensor
 
 
 class MyDataset(Dataset):
@@ -185,25 +189,48 @@ def random_matrix(
     if d == 0:
         return torch.empty((0, 0), device=device, dtype=torch.float32)
     if cov_const is None:
-        cov_const = 1.0
-    if cov_const <= 0:
-        raise ValueError("cov_const (exponent) must be positive for this eigenvalue distribution.")
+        cov_const = 100.0  # Default: results in eigenvalues [1, ..., 1/100]
+
+    if not isinstance(cov_const, (float, int)) or cov_const <= 0:
+        raise ValueError(
+            f"'cov_const' (value defining eigenvalue range [1, 1/cov_const]) must be positive, got {cov_const}."
+        )
 
     A = torch.randn(d, d, device=device, dtype=torch.float32, generator=generator)
     Q, _ = torch.linalg.qr(A)
     Q = Q.to(dtype=torch.float32)
 
-    j_values = torch.arange(1, d + 1, device=device, dtype=torch.float32)
-    new_eigenvalues = 1.0 / (j_values**cov_const)
+    # Generate d logarithmically spaced eigenvalues between 1.0 and 1.0/cov_const
+    log_eigenvalue_start = torch.tensor(0.0, device=device, dtype=torch.float32)  # log(1.0)
+
+    # Ensure cov_const is a tensor for torch.log
+    cov_const_tensor = torch.tensor(cov_const, device=device, dtype=torch.float32)
+    log_eigenvalue_end = -torch.log(cov_const_tensor)  # log(1.0 / cov_const)
+
+    if d == 1:
+        # For d=1, torch.linspace(start, end, 1) yields 'start'.
+        # So, the single eigenvalue will be exp(log_eigenvalue_start) = 1.0.
+        log_spaced_values = log_eigenvalue_start.unsqueeze(0)
+    else:
+        log_spaced_values = torch.linspace(
+            log_eigenvalue_start, log_eigenvalue_end, d, device=device, dtype=torch.float32
+        )
+
+    new_eigenvalues = torch.exp(log_spaced_values)
+
+    # Sort eigenvalues (e.g., ascending) for consistent behavior,
+    # though linspace followed by exp might already be ordered depending on cov_const.
     new_eigenvalues, _ = torch.sort(new_eigenvalues)
 
     new_cov_matrix = Q @ torch.diag(new_eigenvalues) @ Q.T
 
-    # print(f"Target eigenvalues for random_matrix: {new_eigenvalues}")  # Debug print
-    eigenvalues = torch.linalg.eigvalsh(new_cov_matrix)
-    min_eig = torch.min(eigenvalues)
-    max_eig = torch.max(eigenvalues)
-    print(f"    Min eigenvalue of the new matrix: {min_eig}, Max eigenvalue: {max_eig}")
+    # print(f"Target eigenvalues for random_matrix: {new_eigenvalues}")
+    eigenvalues_check = torch.linalg.eigvalsh(new_cov_matrix)
+    min_eig = torch.min(eigenvalues_check)
+    max_eig = torch.max(eigenvalues_check)
+    # The print statement below helps verify the eigenvalue range.
+    # Note: Due to numerical precision, actual min/max might slightly differ from 1.0 and 1.0/cov_const.
+    print(f"    Min eigenvalue of the generated random matrix: {min_eig:.4e}, Max eigenvalue: {max_eig:.4e}")
     return new_cov_matrix
 
 
@@ -235,7 +262,7 @@ def generate_covariance_matrix(
         elif cov_type == "random":
             return random_matrix(feature_dim, cov_const=cov_const, device=device, generator=generator)
     except Exception as e:
-        raise RuntimeError(f"Error generating covariance matrix of type '{cov_type}': {str(e)}")
+        raise RuntimeError(f"Error generating covariance matrix of type '{cov_type}': {str(e)}") from e
     raise ValueError(f"Unhandled covariance matrix type: {cov_type}")
 
 
@@ -357,74 +384,264 @@ def generate_regression(
     return dataset, true_theta, true_hessian
 
 
-def load_covtype_dataset(test_size: float, random_state: int, device: str) -> Tuple[MyDataset, MyDataset, int]:
+def load_openml_dataset(
+    dataset_id: int, test_size: float, val_size: float, random_state: int
+) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
     """
-    Load the covtype dataset from sklearn, preprocess, and split it.
-
-    Args:
-    test_size (float): Proportion of the dataset for the test split.
-    random_state (int): Random state for train_test_split.
-    device (str): Device to load tensors onto.
-
-    Returns:
-    Tuple[MyDataset, MyDataset, int, str]:
-        - Training dataset (MyDataset instance).
-        - Testing dataset (MyDataset instance).
-        - Number of features.
+    Fetch a dataset from OpenML, preprocess it, and split it.
+    It assumes the last column is the target variable.
     """
-    name = "covtype"
-    print(f"Loading {name} dataset...")
-
-    # Fetch the dataset from sklearn
-    covtype_data = fetch_covtype()
-    X_np, y_np = covtype_data.data, covtype_data.target
-
-    # Convert to binary classification: class 1 vs. all others (0)
-    # In covtype, classes are 1-7. We map class 1 to 1, and others to 0.
-    y_binary_np = np.where(y_np == 1, 1, 0)
-
-    # Split the data
-    X_train_np, X_test_np, Y_train_binary_np, Y_test_binary_np = train_test_split(
-        X_np, y_binary_np, test_size=test_size, random_state=random_state, stratify=y_binary_np
+    dataset = openml.datasets.get_dataset(dataset_id, download_data=True, download_qualities=False)
+    X, y, categorical_indicator, attribute_names = dataset.get_data(
+        dataset_format="dataframe", target=dataset.default_target_attribute
     )
 
-    # Convert to PyTorch tensors
-    X_train = torch.tensor(X_train_np, dtype=torch.float32, device=device)
-    Y_train_binary = torch.tensor(Y_train_binary_np, dtype=torch.float32, device=device).squeeze()
-    X_test = torch.tensor(X_test_np, dtype=torch.float32, device=device)
-    Y_test_binary = torch.tensor(Y_test_binary_np, dtype=torch.float32, device=device).squeeze()
+    # One-hot encode categorical features
+    X = pd.get_dummies(X, columns=X.columns[categorical_indicator])
+    # Convert boolean columns to int
+    for col in X.columns:
+        if X[col].dtype == "bool":
+            X[col] = X[col].astype(int)
 
-    number_features = X_train.shape[1]  # Number of features
+    # Ensure target is binary
+    y = y.astype("category").cat.codes
 
-    print(f"Finished loading and processing {name} dataset.")
-    print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train_binary.shape}")
-    print(f"  Testing X shape: {X_test.shape}, Testing Y shape: {Y_test_binary.shape}")
+    X_np = X.to_numpy(dtype=np.float32)
+    y_np = y.to_numpy(dtype=np.float32)
+
+    # Split data
+    X_train_temp_np, X_test_np, y_train_temp_np, y_test_np = train_test_split(
+        X_np,
+        y_np,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y_np if np.min(np.bincount(y_np.astype(int))) > 1 else None,
+    )
+    if val_size > 0:
+        X_train_np, X_val_np, y_train_np, y_val_np = train_test_split(
+            X_train_temp_np,
+            y_train_temp_np,
+            test_size=val_size,
+            random_state=random_state,
+            stratify=y_train_temp_np if np.min(np.bincount(y_train_temp_np.astype(int))) > 1 else None,
+        )
+    else:
+        X_train_np, y_train_np = X_train_temp_np, y_train_temp_np
+        X_val_np = np.array([], dtype=np.float32).reshape(0, X_train_np.shape[1])
+        y_val_np = np.array([], dtype=np.float32)
+
+    # Convert to PyTorch tensors on CPU
+    X_train = torch.tensor(X_train_np, dtype=torch.float32, device="cpu")
+    Y_train = torch.tensor(y_train_np, dtype=torch.float32, device="cpu").squeeze()
+    X_val = torch.tensor(X_val_np, dtype=torch.float32, device="cpu")
+    Y_val = torch.tensor(y_val_np, dtype=torch.float32, device="cpu").squeeze()
+    X_test = torch.tensor(X_test_np, dtype=torch.float32, device="cpu")
+    Y_test = torch.tensor(y_test_np, dtype=torch.float32, device="cpu").squeeze()
+
+    number_features = X_train.shape[1]
+    print(f"Finished loading and processing {dataset.name} dataset (ID: {dataset_id}).")
+    print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train.shape}")
+    print(f"  Validation X shape: {X_val.shape}, Validation Y shape: {Y_val.shape}")
+    print(f"  Testing X shape: {X_test.shape}, Testing Y shape: {Y_test.shape}")
     print(f"  Number of features from data: {number_features}")
 
     return (
-        MyDataset(X_train, Y_train_binary),
-        MyDataset(X_test, Y_test_binary),
+        MyDataset(X_train, Y_train),
+        MyDataset(X_val, Y_val),
+        MyDataset(X_test, Y_test),
+        number_features,
+    )
+
+
+def load_mnist_dataset(val_size: float, random_state: int) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
+    """
+    Load and process the MNIST dataset for binary classification of even vs. odd digits.
+    Even digits {0, 2, 4, 6, 8} are mapped to class 0.
+    Odd digits {1, 3, 5, 7, 9} are mapped to class 1.
+    """
+    print("Loading and processing MNIST dataset (Even vs. Odd)...")
+    # Load raw data
+    train_data = tv_datasets.MNIST(root="data", train=True, download=True, transform=ToTensor())
+    test_data = tv_datasets.MNIST(root="data", train=False, download=True, transform=ToTensor())
+
+    # Combine data
+    X_combined = torch.cat((train_data.data, test_data.data), dim=0).float()
+    y_combined = torch.cat((train_data.targets, test_data.targets), dim=0)
+
+    # Remap targets to binary: 0 for even, 1 for odd
+    y_binary = y_combined % 2
+
+    # Flatten images and convert to numpy
+    X_np = X_combined.reshape(X_combined.shape[0], -1).numpy()
+    y_np = y_binary.numpy()
+
+    # Split data (using a fixed 20% test size, as is common for MNIST)
+    test_size = 0.2
+    X_train_temp_np, X_test_np, y_train_temp_np, y_test_np = train_test_split(
+        X_np, y_np, test_size=test_size, random_state=random_state, stratify=y_np
+    )
+    if val_size > 0:
+        X_train_np, X_val_np, y_train_np, y_val_np = train_test_split(
+            X_train_temp_np, y_train_temp_np, test_size=val_size, random_state=random_state, stratify=y_train_temp_np
+        )
+    else:
+        X_train_np, y_train_np = X_train_temp_np, y_train_temp_np
+        X_val_np = np.array([], dtype=np.float32).reshape(0, X_train_np.shape[1])
+        y_val_np = np.array([], dtype=np.float32)
+
+    # Convert back to tensors on CPU
+    X_train = torch.tensor(X_train_np, dtype=torch.float32, device="cpu")
+    Y_train = torch.tensor(y_train_np, dtype=torch.float32, device="cpu").squeeze()
+    X_val = torch.tensor(X_val_np, dtype=torch.float32, device="cpu")
+    Y_val = torch.tensor(y_val_np, dtype=torch.float32, device="cpu").squeeze()
+    X_test = torch.tensor(X_test_np, dtype=torch.float32, device="cpu")
+    Y_test = torch.tensor(y_test_np, dtype=torch.float32, device="cpu").squeeze()
+
+    number_features = X_train.shape[1]
+    print("Finished processing MNIST dataset.")
+    print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train.shape}")
+    print(f"  Validation X shape: {X_val.shape}, Validation Y shape: {Y_val.shape}")
+    print(f"  Testing X shape: {X_test.shape}, Testing Y shape: {Y_test.shape}")
+    print(f"  Number of features from data: {number_features}")
+
+    return (
+        MyDataset(X_train, Y_train),
+        MyDataset(X_val, Y_val),
+        MyDataset(X_test, Y_test),
+        number_features,
+    )
+
+
+def load_covtype_dataset_sklearn(
+    test_size: float, val_size: float, random_state: int
+) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
+    """
+    Load and process the covtype dataset from sklearn.
+    The task is converted to a binary classification problem: class 2 vs. all others.
+    """
+    print("Loading and processing covtype dataset from sklearn...")
+    X, y = fetch_covtype(return_X_y=True)
+
+    # Convert to binary classification: class 2 (Lodgepole Pine) vs all others.
+    # This is a common binary version of this dataset.
+    y_binary = (y == 2).astype(np.float32)
+
+    X_np = X.astype(np.float32)
+    y_np = y_binary
+
+    # Split data
+    X_train_temp_np, X_test_np, y_train_temp_np, y_test_np = train_test_split(
+        X_np,
+        y_np,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y_np if np.min(np.bincount(y_np.astype(int))) > 1 else None,
+    )
+    if val_size > 0:
+        X_train_np, X_val_np, y_train_np, y_val_np = train_test_split(
+            X_train_temp_np,
+            y_train_temp_np,
+            test_size=val_size,
+            random_state=random_state,
+            stratify=y_train_temp_np if np.min(np.bincount(y_train_temp_np.astype(int))) > 1 else None,
+        )
+    else:
+        X_train_np, y_train_np = X_train_temp_np, y_train_temp_np
+        X_val_np = np.array([], dtype=np.float32).reshape(0, X_train_np.shape[1])
+        y_val_np = np.array([], dtype=np.float32)
+
+    # Convert to PyTorch tensors on CPU
+    X_train = torch.tensor(X_train_np, dtype=torch.float32, device="cpu")
+    Y_train = torch.tensor(y_train_np, dtype=torch.float32, device="cpu").squeeze()
+    X_val = torch.tensor(X_val_np, dtype=torch.float32, device="cpu")
+    Y_val = torch.tensor(y_val_np, dtype=torch.float32, device="cpu").squeeze()
+    X_test = torch.tensor(X_test_np, dtype=torch.float32, device="cpu")
+    Y_test = torch.tensor(y_test_np, dtype=torch.float32, device="cpu").squeeze()
+
+    number_features = X_train.shape[1]
+    print("Finished processing sklearn covtype dataset.")
+    print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train.shape}")
+    print(f"  Validation X shape: {X_val.shape}, Validation Y shape: {Y_val.shape}")
+    print(f"  Testing X shape: {X_test.shape}, Testing Y shape: {Y_test.shape}")
+    print(f"  Number of features from data: {number_features}")
+
+    return (
+        MyDataset(X_train, Y_train),
+        MyDataset(X_val, Y_val),
+        MyDataset(X_test, Y_test),
         number_features,
     )
 
 
 def load_dataset_from_source(
-    dataset_name: str, device: str, test_size: float, random_state: int = 0
-) -> Tuple[MyDataset, MyDataset, int, int, int]:
+    dataset_name: str, test_size: float, val_size: float, random_state: int = 0, **kwargs
+) -> dict:
     """
     Loads a specified dataset. For now, supports 'covtype'.
-    Returns train/test datasets, param_dim, n_train, and n_test.
+    Returns a dictionary containing train/val/test datasets, param_dim, and counts.
     """
-    if dataset_name.lower() == "covtype":
-        train_dataset, test_dataset, number_features = load_covtype_dataset(
-            test_size=test_size, random_state=random_state, device=device
+    dataset_name_lower = dataset_name.lower()
+    train_dataset, val_dataset, test_dataset, number_features = (None, None, None, None)
+
+    if dataset_name_lower == "covtype":
+        # OpenML ID for Covertype is 1596
+        train_dataset, val_dataset, test_dataset, number_features = load_openml_dataset(
+            dataset_id=1596, test_size=test_size, val_size=val_size, random_state=random_state
         )
-        return (
-            train_dataset,
-            test_dataset,
-            number_features,
-            train_dataset.n_samples,
-            test_dataset.n_samples,
+    elif dataset_name_lower == "mushrooms":
+        # OpenML ID for Mushrooms is 24
+        train_dataset, val_dataset, test_dataset, number_features = load_openml_dataset(
+            dataset_id=24, test_size=test_size, val_size=val_size, random_state=random_state
+        )
+    elif dataset_name_lower == "adult":
+        # OpenML ID for Adult is 1590
+        train_dataset, val_dataset, test_dataset, number_features = load_openml_dataset(
+            dataset_id=1590,
+            test_size=test_size,
+            val_size=val_size,
+            random_state=random_state,
+        )
+    elif dataset_name_lower == "phishing":
+        # OpenML ID for Phishing is 4534
+        train_dataset, val_dataset, test_dataset, number_features = load_openml_dataset(
+            dataset_id=4534,
+            test_size=test_size,
+            val_size=val_size,
+            random_state=random_state,
+        )
+    elif dataset_name_lower == "mnist":
+        train_dataset, val_dataset, test_dataset, number_features = load_mnist_dataset(
+            val_size=val_size,
+            random_state=random_state,
+        )
+    elif dataset_name_lower == "santander":
+        # OpenML ID for Santander is 42175
+        train_dataset, val_dataset, test_dataset, number_features = load_openml_dataset(
+            dataset_id=42175, test_size=test_size, val_size=val_size, random_state=random_state
+        )
+    elif dataset_name_lower == "connect-4":
+        # OpenML ID for Connect-4 is 40978
+        train_dataset, val_dataset, test_dataset, number_features = load_openml_dataset(
+            dataset_id=40978, test_size=test_size, val_size=val_size, random_state=random_state
+        )
+    elif dataset_name_lower == "gisette":
+        # OpenML ID for Gisette is 1510
+        train_dataset, val_dataset, test_dataset, number_features = load_openml_dataset(
+            dataset_id=1510, test_size=test_size, val_size=val_size, random_state=random_state
+        )
+    elif dataset_name_lower == "covtype_sklearn":
+        train_dataset, val_dataset, test_dataset, number_features = load_covtype_dataset_sklearn(
+            test_size=test_size, val_size=val_size, random_state=random_state
         )
     else:
         raise ValueError(f"Unknown dataset_name for loading: {dataset_name}")
+
+    return {
+        "train_dataset": train_dataset,
+        "val_dataset": val_dataset,
+        "test_dataset": test_dataset,
+        "number_features": number_features,
+        "n_train": train_dataset.n_samples,
+        "n_test": test_dataset.n_samples,
+        "n_val": val_dataset.n_samples,
+    }

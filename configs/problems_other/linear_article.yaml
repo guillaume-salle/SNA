@@ -1,0 +1,22 @@
+dataset: synthetic_linear_regression
+dataset_params:
+  n_dataset: 1e4
+  true_theta:
+    - 0.0
+    - 3.0
+    - -9.0
+    - 4.0
+    - -9.0
+    - 15.0
+    - 0.0
+    - -7.0
+    - 1.0
+    - 0.0
+  bias: &bias_setting True
+  cov_type: identity
+  # cov_const:
+  # diag:
+model: LinearRegression
+model_params:
+  bias: *bias_setting
+radius: 1.0

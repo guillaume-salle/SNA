@@ -67,15 +67,6 @@ logistic_random_d=4_N=1e6_r=0:
     Stream_SNA_c=0_d43f051d_0
 logistic_random_d=6_N=1e6_r=0:
     Stream_SNA_c=0_14d2cfae_0
-logistic_random_d=400_N=1e7:
-    Stream_mSNA_ell^0,25_4b34a4f4_0
-    Stream_mSNA_ell^0,5_27c91695_0
-    Stream_mSNA_full_gamma=0,5_7e3909ea_0
-    Stream_mSNA_full_gamma=0_04812c57_0
-    Stream_mSNA_full_ca75c865_0
-    Stream_mSNA_f2bed91c_0
-    Stream_SGD_b69b1961_0
-    Stream_SNA_de931c31_0
 logistic_random_d=200_N=1e7:
     Stream_mSNA_ell^0,25_effb0ded_0
     Stream_mSNA_ell^0,5_e0068094_0
@@ -92,3 +83,97 @@ logistic_random_d=200_N=1e7:
     Stream_mSNA_gamma=0_da3f36da_0
     Stream_mSNA_43920e56_0
     Stream_mSNA_USNA_05fa94ca_0
+linear_random_d=200_N=1e7:
+    Stream_mSNA_ell^0,25_9b8f2e45_0
+    Stream_mSNA_ell^0,5_a6aadbfc_0
+    Stream_mSNA_full_gamma=0,5_96c3daf2_0
+    Stream_mSNA_full_gamma=0_62c67288_0
+    Stream_mSNA_full_1a8992c3_0
+    Stream_mSNA_gamma=0_25deadde_0
+    Stream_mSNA_USNA_2fb52ad3_0
+    Stream_mSNA_7abf8893_0
+    Stream_SGD_9ed5c5dd_0
+    Stream_SNA_b8dbe1f2_0
+    Stream_mSNA_Avg_ell^0,25_a61e19e3_0
+    Stream_mSNA_Avg_ell^0,5_d807da0c_0
+    Stream_mSNA_Avg_full_cbae000e_0
+    Stream_mSNA_Avg_693ab225_0
+    Stream_SGD_Avg_22e3c301_0
+logistic_random_d=400_N=1e7:
+    Stream_SNA_de931c31_0
+    Stream_mSNA_2e71fc8e_0
+logistic_random_d=800_N=1e7:
+    Stream_SNA_a6bee78c_0
+    Stream_mSNA_a585961d_0
+logistic_random_d=1000_N=1e7:
+    Stream_SNA_5cab4f8d_0
+    Stream_mSNA_4f367514_0
+    Stream_mSNA_full_4b9eaaf7_0
+    Stream_SGD_bf5ab9cc_0
+    Stream_mSNA_Avg_ell^0,25_5971ed5a_0
+    Stream_mSNA_Avg_ell^0,5_eb7bcdd9_0
+    Stream_mSNA_Avg_d08f8ab8_0
+    Stream_SGD_Avg_ae9cf6c0_0
+    Stream_mSNA_ell^0,25_ed77f511_0
+    Stream_mSNA_ell^0,5_0ff0f929_0
+    Stream_mSNA_ell^1_062f3323_0
+    Stream_mSNA_init_hess_66ba6636_0
+    Stream_mSNA_init_hess_5692764b_0
+linear_random_d=1000_N=1e7:
+    Stream_mSNA_full_37d47db1_0
+    Stream_mSNA_508e61bb_0
+    Stream_SGD_dd613b04_0
+    Stream_SNA_42858ca9_0
+    Stream_mSNA_ell^0,25_8f807d09_0
+    Stream_mSNA_ell^0,5_0e23f3cd_0
+    Stream_mSNA_ell^1_e76d9e4a_0
+    Stream_mSNA_init_hess_74a03dab_0
+covtype:
+    Stream_mSNA_ell^0,5_cb5c7b5f_0
+    Stream_mSNA_full_ef5a0629_0
+    Stream_mSNA_dfcc3e59_0
+    Stream_SGD_e8eddde0_0
+    Stream_SNA_0a852252_0
+    Stream_mSNA_ell^0,25_567591f5_0
+    Stream_mSNA_ell^0,5_412ffd2d_0
+    Stream_mSNA_ell^1_bf4f8c79_0
+    Stream_mSNA_full_048bdde3_0
+    Stream_mSNA_84cbfcb3_0
+    Stream_SGD_7b66bc10_0
+    Stream_SNA_db20ad44_0
+adult:
+    Stream_mSNA_ell^0,25_443cce0f_0
+    Stream_mSNA_ell^0,5_454f7e64_0
+    Stream_mSNA_full_06f7efe4_0
+    Stream_mSNA_e0f69259_0
+    Stream_SGD_ad8564ac_0
+    Stream_SNA_b1c64cdc_0
+mnist:
+    Stream_mSNA_ell^0,25_6ae93273_0
+    Stream_mSNA_ell^0,5_719b93c1_0
+    Stream_mSNA_full_2ed6333f_0
+    Stream_mSNA_43dd536c_0
+    Stream_SGD_e270bf67_0
+    Stream_SNA_72cc3c35_0
+mushrooms:
+    Stream_mSNA_ell^0,25_c5b374d9_0
+    Stream_mSNA_ell^0,5_58b5a129_0
+    Stream_mSNA_full_210f8630_0
+    Stream_mSNA_0c2a87e5_0
+    Stream_SGD_a9fe5003_0
+    Stream_SNA_836b4d76_0
+phishing:
+    Stream_mSNA_ell^0,25_ca580c2a_0
+    Stream_mSNA_ell^0,5_df0329fa_0
+    Stream_mSNA_full_6b891499_0
+    Stream_mSNA_0bf96ff7_0
+    Stream_SGD_48842c20_0
+    Stream_SNA_e97462bd_0
+covtype_sklearn:
+    Stream_mSNA_ell^0,25_6554f13d_0
+    Stream_mSNA_ell^0,5_c302e983_0
+    Stream_mSNA_ell^1_90d4657f_0
+    Stream_mSNA_full_05b0325b_0
+    Stream_mSNA_9f74bacd_0
+    Stream_SGD_3f0d4c4e_0
+    Stream_SNA_ee989113_0

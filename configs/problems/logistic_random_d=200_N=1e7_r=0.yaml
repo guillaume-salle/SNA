@@ -1,4 +1,0 @@
-inherits_from: logistic_random_d=200.yaml
-dataset_params:
-  n_dataset: 1e7
-radius: 0.0
