@@ -370,7 +370,7 @@ def load_covtype_dataset(test_size: float, random_state: int, device: str) -> Tu
     Tuple[MyDataset, MyDataset, int, str]:
         - Training dataset (MyDataset instance).
         - Testing dataset (MyDataset instance).
-        - Parameter dimension (number of features).
+        - Number of features.
     """
     name = "covtype"
     print(f"Loading {name} dataset...")
@@ -394,17 +394,17 @@ def load_covtype_dataset(test_size: float, random_state: int, device: str) -> Tu
     X_test = torch.tensor(X_test_np, dtype=torch.float32, device=device)
     Y_test_binary = torch.tensor(Y_test_binary_np, dtype=torch.float32, device=device).squeeze()
 
-    param_dim_data = X_train.shape[1]  # Number of features
+    number_features = X_train.shape[1]  # Number of features
 
     print(f"Finished loading and processing {name} dataset.")
     print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train_binary.shape}")
     print(f"  Testing X shape: {X_test.shape}, Testing Y shape: {Y_test_binary.shape}")
-    print(f"  Number of features (param_dim from data): {param_dim_data}")
+    print(f"  Number of features from data: {number_features}")
 
     return (
         MyDataset(X_train, Y_train_binary),
         MyDataset(X_test, Y_test_binary),
-        param_dim_data,
+        number_features,
     )
 
 
@@ -416,9 +416,15 @@ def load_dataset_from_source(
     Returns train/test datasets, param_dim, n_train, and n_test.
     """
     if dataset_name.lower() == "covtype":
-        train_dataset, test_dataset, param_dim_data = load_covtype_dataset(
+        train_dataset, test_dataset, number_features = load_covtype_dataset(
             test_size=test_size, random_state=random_state, device=device
         )
-        return train_dataset, test_dataset, param_dim_data, train_dataset.n_samples, test_dataset.n_samples
+        return (
+            train_dataset,
+            test_dataset,
+            number_features,
+            train_dataset.n_samples,
+            test_dataset.n_samples,
+        )
     else:
         raise ValueError(f"Unknown dataset_name for loading: {dataset_name}")
