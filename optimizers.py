@@ -185,7 +185,7 @@ class mSNA(BaseOptimizer):
         mask_size: int = 1,
         # Params for initial hessian inversion
         init_hess_inv: bool = False,
-        init_hess_inv_samples: int = 10000,
+        init_hess_inv_samples: int | None = None,
         init_hess_inv_reg: float = 1e-4,
     ):
         super().__init__(
@@ -214,6 +214,14 @@ class mSNA(BaseOptimizer):
 
         self.is_warming_up = init_hess_inv
         if self.is_warming_up:
+            if init_hess_inv_samples is None:
+                raise ValueError(
+                    "If 'init_hess_inv' is True, 'init_hess_inv_samples' must be specified in the optimizer config."
+                )
+            if init_hess_inv_samples <= 0:
+                raise ValueError(
+                    f"'init_hess_inv_samples' must be a positive integer, but got {init_hess_inv_samples}."
+                )
             print(f"   [mSNA] Optimizer entering warm-up phase to estimate initial Hessian.")
             print(f"   [mSNA] Will accumulate {init_hess_inv_samples} samples before computing Hessian.")
             self.warmup_samples_processed = 0

@@ -119,6 +119,8 @@ logistic_random_d=1000_N=1e7:
     Stream_mSNA_ell^1_062f3323_0
     Stream_mSNA_init_hess_66ba6636_0
     Stream_mSNA_init_hess_5692764b_0
+    Stream_mSNA_init_hess=10d_66ba6636_0
+    Stream_mSNA_init_hess=5d_a338444a_0
 linear_random_d=1000_N=1e7:
     Stream_mSNA_full_37d47db1_0
     Stream_mSNA_508e61bb_0

@@ -4,6 +4,6 @@ optimizer_params:
   # Enable initial hessian inversion
   init_hess_inv: true
   # Number of samples to use for the estimation
-  init_hess_inv_samples: "expr: int(d)" 
+  init_hess_inv_samples: "expr: int(5*d)" 
   # Regularization for the inversion
   init_hess_inv_reg: "expr: float(1e-4)"
