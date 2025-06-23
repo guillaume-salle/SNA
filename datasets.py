@@ -149,7 +149,7 @@ class RegressionIterableDataset(IterableDataset):
             yield X_batch_gen.to("cpu"), Y_batch_gen.to("cpu")
 
 
-def toeplitz_matrix(d: int, cov_const: float | None = None, diag: bool = False, device: str = "cpu") -> torch.Tensor:
+def toeplitz_matrix(d: int, cov_const: float | None = None, device: str = "cpu") -> torch.Tensor:
     if cov_const is None:
         cov_const = 1.0 / d
     if d > 0 and cov_const <= 0:
@@ -163,9 +163,6 @@ def toeplitz_matrix(d: int, cov_const: float | None = None, diag: bool = False, 
     log_matrix = abs_diff.float() * log_cov_const
     matrix = torch.exp(log_matrix)
 
-    if diag:
-        diag_values = (1.0 + indices).to(matrix.dtype)
-        matrix.diagonal().copy_(diag_values)
     return matrix
 
 
@@ -238,7 +235,6 @@ def generate_covariance_matrix(
     feature_dim: int,
     cov_type: str,
     cov_const: float | None = None,
-    diag: bool = False,
     device: str = "cpu",
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
@@ -256,7 +252,7 @@ def generate_covariance_matrix(
         if cov_type == "identity":
             return torch.eye(feature_dim, device=device, dtype=torch.float32)
         elif cov_type == "toeplitz":
-            return toeplitz_matrix(feature_dim, cov_const=cov_const, diag=diag, device=device)
+            return toeplitz_matrix(feature_dim, cov_const=cov_const, device=device)
         elif cov_type == "hard":
             return hard_matrix(feature_dim, cov_const=cov_const, device=device)
         elif cov_type == "random":
@@ -301,7 +297,6 @@ def generate_regression(
     bias: bool = dataset_params.get("bias", True)
     cov_type: str = dataset_params.get("cov_type", "identity")
     cov_const: float | None = dataset_params.get("cov_const")
-    diag: bool = dataset_params.get("diag", False)
     variance: float = dataset_params.get("variance", 1.0)  # For linear regression noise
 
     if n_dataset <= 0:
@@ -348,7 +343,6 @@ def generate_regression(
         feature_dim,
         cov_type=cov_type,
         cov_const=cov_const,
-        diag=diag,
         device=data_gen_device,
         generator=rng_data,
     )

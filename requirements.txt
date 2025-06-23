@@ -1,9 +1,10 @@
-torch
 wandb
 PyYAML
 tqdm
-numpy
 scikit-learn
+numpy
 openml
-pandas
+torch
 torchvision
+pandas
+matplotlib

@@ -1,0 +1,14 @@
+dataset: synthetic_logistic_regression
+dataset_params:
+  n_dataset: "expr: int(1e5)"
+  param_dim: 1000
+  bias: &bias_setting True 
+  cov_type: random
+  cov_const: 100.0
+
+model: logistic_regression
+model_params:
+  bias: *bias_setting
+  lambda_: 0.0
+
+radius: 1.0

@@ -1,0 +1,13 @@
+dataset: santander
+dataset_params:
+  test_size: 0.2
+  val_size: 0.0
+  param_dim: 31
+
+log_test_every_n_batches: 200
+log_train_every_n_batches: 200
+
+model: logistic_regression
+model_params:
+  bias: true
+  lambda_: 1e-4 

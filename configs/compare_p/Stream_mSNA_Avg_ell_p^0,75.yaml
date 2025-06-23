@@ -1,5 +1,0 @@
-inherits_from: mSNA_Avg_base.yaml
-inherits_from: ell.yaml
-optimizer_params:
-  # lr_const: "expr: pow(int(pow(d,0.75)), 0.25)"
-  batch_size: "expr: int(pow(d,0.75))"

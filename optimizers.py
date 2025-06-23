@@ -75,6 +75,46 @@ class BaseOptimizer(ABC):
             self.param_not_avg = param
         self.n_iter = 0
 
+    def initialize(
+        self,
+        initial_data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
+        gd_steps: int,
+        gd_lr: float,
+    ) -> None:
+        """
+        Performs deterministic Gradient Descent on a small initial dataset
+        to find a better starting point (theta_init) for the main optimization.
+
+        Args:
+            initial_data: A batch of data to use for initialization.
+            gd_steps (int): The number of gradient descent steps to perform.
+            gd_lr (float): The learning rate for the gradient descent.
+        """
+        print(f"   [Initializer] Performing {gd_steps} steps of deterministic GD...")
+        # Use param_not_avg for the GD updates, which will also update self.param if not averaged
+        temp_param = self.param_not_avg.clone().detach().requires_grad_(False)
+
+        for step in range(gd_steps):
+            grad = self.obj_function.grad(initial_data, temp_param)
+            temp_param.add_(grad, alpha=-gd_lr)
+            if (step + 1) % 10 == 0:
+                loss = self.obj_function(initial_data, temp_param)
+                print(f"   [Initializer] GD Step {step+1}/{gd_steps}, Loss: {loss.item():.4f}")
+
+        # Update the optimizer's parameters with the result of the GD
+        self.param_not_avg.copy_(temp_param)
+        if self.averaged:
+            # If averaged, the main parameter also needs to be reset to the new starting point
+            self.param.copy_(temp_param)
+        print("   [Initializer] GD initialization complete.")
+
+    def initialize_hessian(self, initial_data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor], **kwargs) -> None:
+        """
+        Placeholder for initializing the Hessian matrix.
+        Subclasses that use a Hessian should override this method.
+        """
+        pass  # Base optimizer does not have a Hessian matrix
+
     @abstractmethod
     def step(
         self,
@@ -327,6 +367,48 @@ class mSNA(BaseOptimizer):
         if self.averaged_matrix:
             self.matrix_avg.copy_(self.matrix)
             self.sum_weights_matrix = 0.0
+
+    def initialize_hessian(
+        self, initial_data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor], reg: float = 1e-4
+    ) -> None:
+        """
+        Initializes the mSNA matrix by computing the inverse of the Hessian
+        from an initial dataset.
+
+        Args:
+            initial_data: The data to compute the Hessian on.
+            reg (float): Regularization parameter for the Hessian inversion.
+        """
+        print("   [mSNA] Initializing matrix with inverse Hessian estimate...")
+        try:
+            # Compute Hessian at the current parameter (theta_init)
+            avg_hessian = self.obj_function.hessian(initial_data, self.param)
+
+            # Regularize before inverting
+            avg_hessian.diagonal().add_(reg)
+
+            initial_matrix = torch.linalg.inv(avg_hessian)
+            symmetrized_matrix = (initial_matrix + initial_matrix.T) / 2
+
+            self.matrix.copy_(symmetrized_matrix)
+            if self.averaged_matrix:
+                self.matrix_avg.copy_(symmetrized_matrix)
+                self.sum_weights_matrix = 0.0  # Reset averaging
+
+            eigenvalues = torch.linalg.eigvalsh(self.matrix)
+            print(f"   [mSNA] Successfully initialized matrix.")
+            print(
+                f"   [mSNA] Initial matrix condition number: {eigenvalues.max()/eigenvalues.min():.2e} (min={eigenvalues.min():.4f}, max={eigenvalues.max():.4f})"
+            )
+
+        except Exception as e:
+            print(f"   [mSNA] WARNING: Failed to compute or invert Hessian during initialization: {e}.")
+            print("   [mSNA] Falling back to Identity matrix.")
+            traceback.print_exc()
+            # Reset to identity on failure
+            self.matrix.copy_(torch.eye(self.dim, device=self.device, dtype=self.param.dtype))
+            if self.averaged_matrix:
+                self.matrix_avg.copy_(self.matrix)
 
     def step(
         self,
@@ -673,7 +755,7 @@ class SNA(BaseOptimizer):
             log_weight=log_weight,
         )
 
-        self.init_id_weight = init_id_weight
+        self.init_id_weight = float(init_id_weight) / float(batch_size)
         self.compute_hessian_param_avg = compute_hessian_param_avg
         self.log_weight_matrix = log_weight_matrix
 
@@ -681,6 +763,42 @@ class SNA(BaseOptimizer):
         self.hessian_bar = torch.eye(self.dim, device=self.device, dtype=self.param.dtype)
         self.sum_weights_hessian = self.init_id_weight
         self.matrix = torch.eye(self.dim, device=self.device, dtype=self.param.dtype)
+
+    def initialize_hessian(self, initial_data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor], **kwargs) -> None:
+        """
+        Initializes the SNA `hessian_bar` by computing the Hessian from an
+        initial dataset. It also computes the initial inverse matrix.
+
+        Args:
+            initial_data: The data to compute the Hessian on.
+        """
+        print("   [SNA] Initializing Hessian estimate...")
+        try:
+            # Compute Hessian at the current parameter (theta_init)
+            avg_hessian = self.obj_function.hessian(initial_data, self.param)
+
+            # Initialize hessian_bar with this estimate
+            self.hessian_bar.copy_(avg_hessian)
+            # Reset the weight sum, accounting for the initial identity weight
+            self.sum_weights_hessian = 1.0 + self.init_id_weight
+
+            # Compute the initial inverse matrix
+            self.matrix.copy_(torch.linalg.inv(self.hessian_bar))
+
+            print(f"   [SNA] Successfully initialized Hessian and matrix.")
+            eigenvalues_H = torch.linalg.eigvalsh(self.hessian_bar)
+            eigenvalues_M = torch.linalg.eigvalsh(self.matrix)
+            print(
+                f"   [SNA] Initial H cond: {eigenvalues_H.max()/eigenvalues_H.min():.2e}, M cond: {eigenvalues_M.max()/eigenvalues_M.min():.2e}"
+            )
+
+        except Exception as e:
+            print(f"   [SNA] WARNING: Failed to compute or invert Hessian during initialization: {e}.")
+            print("   [SNA] Falling back to Identity matrix.")
+            traceback.print_exc()
+            # Reset to identity on failure
+            self.hessian_bar.copy_(torch.eye(self.dim, device=self.device, dtype=self.param.dtype))
+            self.matrix.copy_(torch.eye(self.dim, device=self.device, dtype=self.param.dtype))
 
     def step(
         self,
@@ -730,11 +848,12 @@ class SNA(BaseOptimizer):
         self.hessian_bar.add_((hessian - self.hessian_bar), alpha=(weight / self.sum_weights_hessian))
         self.matrix = torch.linalg.inv(self.hessian_bar)
 
-        norm_hessian = torch.linalg.norm(hessian, ord=2)
-        self.log_metrics["norm_hessian"] = norm_hessian
-        norm_hessian_bar = torch.linalg.norm(self.hessian_bar, ord=2)
-        self.log_metrics["SNA_norm_hessian_bar"] = norm_hessian_bar
-        norm_matrix = torch.linalg.norm(self.matrix, ord=2)
-        self.log_metrics["SNA_norm_matrix"] = norm_matrix
+        # Optional metrics
+        # norm_hessian = torch.linalg.norm(hessian, ord=2)
+        # self.log_metrics["norm_hessian"] = norm_hessian
+        # norm_hessian_bar = torch.linalg.norm(self.hessian_bar, ord=2)
+        # self.log_metrics["SNA_norm_hessian_bar"] = norm_hessian_bar
+        # norm_matrix = torch.linalg.norm(self.matrix, ord=2)
+        # self.log_metrics["SNA_norm_matrix"] = norm_matrix
 
         return grad

@@ -1,9 +1,0 @@
-dataset: gisette
-dataset_params:
-  test_size: 0.2
-  val_size: 0.0
-
-model: LogisticRegression
-model_params:
-  bias: true
-  lambda_: 1e-4 

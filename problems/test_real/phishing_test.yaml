@@ -1,0 +1,13 @@
+dataset: phishing
+dataset_params:
+  test_size: 0.5 # 5528 / (5527 + 5528) ~ 0.5
+  val_size: 0.0
+  param_dim: 69
+
+log_test_every_n_batches: 200
+log_train_every_n_batches: 200
+
+model: logistic_regression
+model_params:
+  bias: true
+  lambda_: 1e-4 

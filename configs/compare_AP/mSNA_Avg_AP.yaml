@@ -1,3 +1,0 @@
-inherits_from: .yaml
-optimizer_params:
-  compute_hessian_param_avg: True 

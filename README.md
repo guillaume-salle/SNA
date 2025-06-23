@@ -1,15 +1,15 @@
 # Stochastic Numerical Analysis (SNA) Experiment Framework
 
-This framework is designed to run and benchmark various stochastic optimization algorithms on synthetic datasets, with a primary focus on linear regression problems. It features integration with Weights & Biases (WandB) for experiment tracking and visualization.
+This framework is designed for running, comparing, and analyzing various stochastic optimization algorithms. It is primarily focused on second-order methods and is equipped with seamless [Weights & Biases (WandB)](https://wandb.ai/) integration for robust experiment tracking and visualization.
 
 ## Prerequisites
 
-*   Python 3.9+
-*   A Weights & Biases account (if you want to log results online).
+- Python 3.9+
+- A Weights & Biases account for logging results online.
 
 ## Setup
 
-1.  **Clone the Repository (if applicable)**
+1.  **Clone the Repository**
     ```bash
     git clone <your-repo-url>
     cd <your-repo-directory>
@@ -22,268 +22,143 @@ This framework is designed to run and benchmark various stochastic optimization 
     ```
 
 3.  **Install Dependencies**
-    Create a `requirements.txt` file with the following content:
-    ```
-    torch
-    wandb
-    PyYAML
-    tqdm
-    numpy # often a dependency of torch, good to have explicit
-    ```
-    Then install them:
     ```bash
     pip install -r requirements.txt
     ```
 
 ## Directory Structure
 
-A recommended directory structure for your project:
-
 ```
 .
-├── .completed_runs.log       # Tracks completed runs to avoid re-computation
-├── configs/
-│   ├── problem/              # Example directory for problem configurations
-│   │   └── linear_regression_problem.yaml
-│   └── optimizers/           # Default directory for optimizer configurations
-│       ├── SGD.yaml
-│       ├── USNA.yaml
-│       └── USNA_spherical.yaml
-├── datasets.py               # Dataset generation logic
-├── objective_functions.py    # Objective function definitions
-├── optimizers.py             # Optimizer implementations
-├── README.md                 # This file
-├── run.py                    # Main script to run experiments
-└── requirements.txt          # Python dependencies
+├── .completed_runs.log       # Tracks completed runs to avoid re-computation.
+├── data/                     # Stores downloaded real-world datasets (e.g., MNIST).
+├── optimizers/               # YAML configuration files for optimizers.
+│   ├── base/
+│   └── ...
+├── problems/                 # YAML configuration files for problems (datasets/models).
+│   ├── real/
+│   └── synthetic/
+├── datasets.py               # Data loading and synthetic data generation logic.
+├── main.py                   # Main script for running experiments.
+├── make_table.py             # Script to fetch results from WandB and generate tables.
+├── objective_functions.py    # Definitions for loss functions (e.g., LinearRegression).
+├── optimizers.py             # Implementations of optimization algorithms (SGD, SNA, mSNA).
+├── run.py                    # Core experiment execution logic called by main.py.
+├── utils.py                  # Utility functions for config loading, etc.
+└── requirements.txt          # Python dependencies.
 ```
+
+## How It Works
+
+The framework operates based on a hierarchical configuration system using YAML files, separating the **problem** from the **optimizer**.
+
+1.  **`main.py`** is the main entry point. It parses command-line arguments to find problem and optimizer configuration files.
+2.  For each combination of problem and optimizer, it creates a unique configuration.
+3.  It checks the `.completed_runs.log` to see if this exact configuration has already been run. If so, it skips it.
+4.  It initializes a WandB run and calls **`run.py`** to execute the experiment for a specific seed.
+5.  **`run.py`** sets up the dataset and model, runs the optimization loop, and logs all metrics to WandB.
+6.  Once experiments are complete, **`make_table.py`** can be used to fetch the results from WandB and display them in a formatted table.
+
+---
 
 ## Configuration Files
 
-Experiments are defined by two main types of YAML configuration files: problem configurations and optimizer configurations.
-
 ### 1. Problem Configuration
 
-This file defines the dataset, the model, and other problem-specific parameters. It is passed to the script using the `-c` or `--config` argument.
+Defines the dataset and model. Located in `problems/`.
 
-**Example (`configs/problem/linear_regression_problem.yaml`):**
+**Example (`problems/real/adult.yaml`):**
 ```yaml
-# Problem-specific parameters
-radius: 0.1              # Radius for initializing theta_init on a sphere around true_theta
-
-# Model parameters (passed to the objective function class)
+problem_type: "real"
+dataset: "adult"
 model_params:
-  bias: True             # Whether the LinearRegression model includes a bias term
-
-# Dataset parameters (passed to generate_linear_regression function)
+  name: "logistic_regression"
+  bias: True
+  lambda_: 0.001
 dataset_params:
-  n_dataset: 100000      # Total number of samples in the dataset
-  param_dim: 10          # Dimension of the true_theta parameter vector (if true_theta not given)
-  # true_theta: [0.5, 1.0, -0.2, ...] # Optionally provide the exact true_theta
-  bias: True             # Whether the data generation process includes a bias feature
-  cov_type: "random"     # Covariance matrix type for features X. Options:
-                         # "identity", "toeplitz", "hard", "random"
-  cov_const: 1.0         # Constant for covariance matrix (meaning depends on cov_type)
-                         # For "toeplitz": decay constant (e.g., 1/d)
-                         # For "hard": condition number like constant
-                         # For "random": exponent for eigenvalue decay (1/j^cov_const)
-  diag: False            # For "toeplitz": whether to modify the diagonal
-  # data_batch_size is automatically set from optimizer_params.batch_size during run_experiment
-
-# Name for the dataset, used in project naming on WandB
-dataset: "LinearRegressionSynth"
+  test_size: 0.2
+  val_size: 0.0
 ```
 
-**Key `problem_config` fields:**
-*   `radius`: (float) Used to initialize the optimizer's parameter `theta_init` such that `||theta_init - true_theta||^2 = radius^2`.
-*   `model_params`: (dict) Passed to the constructor of the model class (e.g., `LinearRegression`).
-    *   `bias`: (bool) Whether the model itself should handle a bias term.
-*   `dataset_params`: (dict) Parameters for data generation.
-    *   `n_dataset`: (int) Total number of samples for the experiment.
-    *   `param_dim`: (int) Dimension of the `true_theta` vector (if `true_theta` is not explicitly provided).
-    *   `true_theta`: (list, optional) Explicitly define the true parameters. If given, `param_dim` is inferred.
-    *   `bias`: (bool) Whether the generated features `phi` should include an intercept term.
-    *   `cov_type`: (str) Type of covariance matrix for the features `X` (before bias is added).
-        *   `identity`: Identity matrix.
-        *   `toeplitz`: Toeplitz matrix with `rho^|i-j|`. `cov_const` here is `rho`.
-        *   `hard`: A block-diagonal matrix designed to be ill-conditioned. `cov_const` influences conditioning.
-        *   `random`: Matrix with random eigenvectors and eigenvalues decaying as `1/j^cov_const`.
-    *   `cov_const`: (float, optional) Constant parameter for `cov_type`.
-    *   `diag`: (bool, optional) For `cov_type: "toeplitz"`, whether to modify the diagonal.
-*   `dataset`: (str) A descriptive name for the dataset, used in WandB project naming.
+**Key Fields:**
+- `problem_type`: (str) `real` or `synthetic`.
+- `dataset`: (str) The name of the dataset. For `real` problems, this must match a loader in `datasets.py`. For `synthetic`, it defines the type (e.g., `synthetic_linear_regression`).
+- `model_params`: (dict) Parameters for the objective function.
+  - `name`: (str) The objective function to use (e.g., `logistic_regression`).
+- `dataset_params`: (dict) Parameters for the data loader or generator.
 
-### 2. Optimizer Configurations
+### 2. Optimizer Configuration
 
-These files define the optimizer to be used and its parameters.
-*   **Location**: By default, these files should be placed in the `configs/optimizers/` directory. This base path is defined by `OPTIMIZER_CONFIGS_DIR` in `run.py`.
-*   **Naming**: When running `run.py`, you refer to these files by their name without the `.yaml` or `.yml` suffix (e.g., `-o SGD` will load `configs/optimizers/SGD.yaml`). If the file has a `.yml` extension, provide the name with `.yml` or ensure your default append logic in `run.py` also checks for `.yml`.
+Defines the algorithm and its hyperparameters. Located in `optimizers/`.
 
-**Example (`configs/optimizers/SGD.yaml`):**
+**Example (`optimizers/compare/mSNA.yaml`):**
 ```yaml
-optimizer: SGD
+extends: mSNA_base.yaml
 optimizer_params:
-  lr_exp: 0.5
-  lr_const: 0.1
-  lr_add_iter: 100.0
-  averaged: True
-  log_weight: 2.0
-  batch_size: 1        # Explicit batch size for SGD steps
-  # batch_size_power: 1.0 # Alternative: batch_size = param_dim^batch_size_power
-  multiply_lr: 0.0     # lr multiplier based on batch_size (0.0 = no multiplication)
-  # device: "cuda"     # "cuda" or "cpu". Defaults to cuda if available, else cpu.
-```
-
-**Example (`configs/optimizers/USNA.yaml` - Base USNA config):**
-```yaml
-optimizer: USNA
-optimizer_params:
-  lr_exp: 0.67
+  lr_exp: 0.75
   lr_const: 1.0
-  lr_add_iter: 1.0
-  averaged: True
-  log_weight: 0.0
-
-  lr_hess_exp: 0.67
-  lr_hess_const: 1.0
-  lr_hess_add_iter: 1.0
+  lr_add: 0.0
   averaged_matrix: True
-  log_weight_matrix: 0.0
-  compute_hessian_param_avg: False # Use param (averaged) or param_not_averaged for Hessian computations
-  proj: True                     # Projection type for Hessian update
-  version: "mask"                # Default USNA version ("mask", "spherical_vector", "rademacher_vector", "full")
+  version: "mask"
   mask_size: 1
-
-  batch_size_power: 1.0          # Default: batch_size = param_dim ^ batch_size_power
-  # batch_size: 10 # Or specify explicitly
-  multiply_lr: "default"         # "default" = 1.0 - lr_exp, or a float value
 ```
 
-**Example (`configs/optimizers/USNA_spherical.yaml` - Inheriting and Overriding):**
-```yaml
-inherits_from: USNA.yaml  # Or just "USNA" if .yaml is appended by default
+**Key Fields:**
+- `extends`: (str, optional) Inherit from a base configuration in `optimizers/base/`.
+- `optimizer`: (str) Name of the optimizer class (e.g., `SGD`, `mSNA`).
+- `optimizer_params`: (dict) Hyperparameters for the optimizer instance.
+- `initialization`: (dict, optional) See section on Optimizer Initialization.
 
-optimizer_params:
-  version: spherical_vector
-  # Other parameters from USNA.yaml are inherited unless overridden here
-  # For example, to change learning rates for this specific version:
-  # lr_exp: 0.5
-```
-
-**Key `optimizer_config` fields:**
-*   `optimizer`: (str) Name of the optimizer class (e.g., "SGD", "USNA"). Must match a class returned by `get_optimizer_class` in `run.py`.
-*   `optimizer_params`: (dict) Parameters passed to the optimizer's constructor.
-    *   **Common Parameters (for `BaseOptimizer`)**:
-        *   `lr_exp`: (float) Learning rate exponent `1/k^lr_exp`.
-        *   `lr_const`: (float) Learning rate constant.
-        *   `lr_add_iter`: (float) Additive term in learning rate denominator.
-        *   `averaged`: (bool) Whether to use Polyak-Ruppert averaging for parameters.
-        *   `log_weight`: (float, optional) Exponent for logarithmic weights if `averaged` is true. Default from `BaseOptimizer.DEFAULT_LOG_WEIGHT`.
-        *   `batch_size`: (int, optional) Batch size for optimizer steps.
-        *   `batch_size_power`: (float, optional) If `batch_size` is not given, it's calculated as `param_dim ** batch_size_power`. Default from `BaseOptimizer.DEFAULT_BATCH_SIZE_POWER`.
-        *   `multiply_lr`: (float or str, optional) Multiplies `lr_const` by `batch_size ^ multiply_lr`. If "default", uses `1.0 - lr_exp`. Default is `0.0` (no multiplication).
-        *   `device`: (str, optional) "cuda" or "cpu". If not specified, defaults to "cuda" if available, otherwise "cpu".
-    *   **USNA-Specific Parameters**:
-        *   `lr_hess_exp`, `lr_hess_const`, `lr_hess_add_iter`: Learning rate parameters for Hessian matrix updates.
-        *   `averaged_matrix`: (bool) Whether to average the Hessian matrix estimate.
-        *   `log_weight_matrix`: (float, optional) Logarithmic weight exponent for matrix averaging.
-        *   `compute_hessian_param_avg`: (bool) If true, Hessian computations (e.g., `H(param,...)`) use the averaged parameter `param`; otherwise, they use `param_not_averaged`.
-        *   `proj`: (bool) Projection type used in some Hessian update rules.
-        *   `version`: (str) Version of USNA update: "mask", "spherical_vector", "rademacher_vector", "full".
-        *   `mask_size`: (int) For `version: "mask"`, the number of Hessian columns/rows to sample.
-*   `inherits_from`: (str, optional) Filename of a parent optimizer configuration to inherit from. The current file's parameters will deeply merge with and override the parent's.
+---
 
 ## Running Experiments
 
-The main script `run.py` is used to launch experiments.
-
-**Command:**
-```bash
-python run.py -c <problem_config.yaml> -o <optimizer_config.yaml> [<optimizer_config_2> ...] -N <num_runs>
-```
+Use `main.py` to launch one or more experiment runs.
 
 **Arguments:**
-*   `-c, --config PATH`: **Required**. Path to the problem definition YAML file. The `.yaml` suffix is optional.
-*   `-o, --optimizer NAME_OR_PATH [NAME_OR_PATH ...]`: **Required**.
-    *   Name(s) of optimizer YAML file(s) (e.g., `SGD`, `USNA_spherical`) located in the directory specified by `OPTIMIZER_CONFIGS_DIR` in `run.py` (default: `configs/optimizers/`). The `.yaml` suffix is optional.
-    *   Alternatively, you can use shell globbing to pass full paths, e.g., `configs/optimizers/USNA*.yaml`.
-*   `-N, --N_runs INT`: Number of runs (seeds) for averaging. Default is `1`. Max is `100`.
+- `-p, --problems`: Path(s) to problem YAML files. Wildcards are supported.
+- `-o, --optimizers`: Path(s) to optimizer YAML files. Wildcards are supported.
+- `-N, --num-seeds`: Number of seeds to run for each configuration.
 
 **Examples:**
-1.  Run SGD on `my_problem.yaml` for 10 seeds:
-    ```bash
-    python run.py -c my_problem.yaml -o SGD -N 10
-    ```
-2.  Run SGD and a specific USNA variant for 5 seeds each:
-    ```bash
-    python run.py -c my_problem.yaml -o SGD USNA_spherical -N 5
-    ```
-3.  Run all USNA variants whose config files start with `USNA` using shell globbing:
-    ```bash
-    python run.py -c my_problem.yaml -o configs/optimizers/USNA* -N 3
-    ```
+```bash
+# Run mSNA on the adult dataset for 5 seeds
+python main.py -p problems/real/adult.yaml -o optimizers/compare/mSNA.yaml -N 5
 
-## Weights & Biases (WandB) Integration
+# Run all optimizers in 'compare' on all 'real' problems
+python main.py -p 'problems/real/*' -o 'optimizers/compare/*' -N 3
+```
 
-Experiments are automatically logged to Weights & Biases if WandB is configured locally.
+## Generating Results Tables
 
-*   **Entity**: **IMPORTANT!** The script currently has the WandB entity hardcoded as `"USNA"` in the `wandb.init()` call within `run.py`. You **must** change this to your own WandB username or team name, or remove the `entity` argument if you want it to default to your logged-in WandB entity.
-    ```python
-    # In run.py, inside the seed loop:
-    wandb_run = wandb.init(
-        entity="YOUR_WANDB_ENTITY_HERE", # <-- CHANGE THIS
-        project=project_name,
-        # ...
-    )
-    ```
+After running experiments, use `make_table.py` to fetch results and generate a summary table. It uses the same arguments as `main.py` to identify which runs to include.
 
-*   **Project Name**: Generated as `"{dataset_name}-{problem_hash}"`.
-    *   `dataset_name` comes from the `dataset` field in the problem config.
-    *   `problem_hash` is an MD5 hash of the sorted problem configuration string.
-*   **Group Name**: Generated as `"{optimizer_config_filename_base}-{optimizer_hash}"`.
-    *   `optimizer_config_filename_base` is the name of the optimizer config file (e.g., "SGD", "USNA_spherical").
-    *   `optimizer_hash` is an MD5 hash of the sorted optimizer configuration string.
-*   **Run Name**: Generated as `"{optimizer_config_filename_base}-{run_identifier}_{X}"`.
-    *   `run_identifier` is an MD5 hash of the merged (problem + current optimizer) configuration string (first 6 characters).
-    *   `X` is the current seed number.
+**Arguments:**
+- `--skip-run`: **(Important)** Add this flag to prevent re-running experiments.
+- All other arguments are the same as `main.py`.
 
-**Viewing Results:**
-On the WandB project page:
-1.  Use the "Group" button/panel and group by `wandb_group` (which corresponds to the `group_name` defined above).
-2.  Select the group(s) corresponding to your experiment series.
-3.  In the chart settings (pencil icon), you can enable aggregation methods like 'Avg', 'StdDev', or 'Min/Max' across seeds for a given group.
+**Example:**
+```bash
+# Fetch results for the runs specified and print a table
+python make_table.py -p 'problems/real/*' -o 'optimizers/compare/*' -N 3 --skip-run
+```
 
-## Output & Resuming
+## Weights & Biases Integration
 
-*   **Console Output**: The script prints progress, configuration details, and summaries to the console.
-*   **Completion Log (`.completed_runs.log`)**:
-    *   Each successfully completed run (a specific optimizer config + seed combination) has its unique run name logged to this file.
-    *   On subsequent script executions, if a run name is found in this log, that specific run will be skipped, preventing re-computation.
-    *   Delete this file if you want to re-run all experiments from scratch.
+- **Setup**: Before the first run, open `main.py` and change the `WANDB_ENTITY` variable to your WandB username or team name.
+- **Project Name**: The WandB project is named after the `dataset` field in the problem config (e.g., "adult", "mnist").
+- **Group Name**: Runs are grouped by the optimizer's YAML filename (e.g., `mSNA`, `SGD_Avg`).
+- **Run Name**: Each run has a unique ID based on its configuration and seed, ensuring reproducibility.
 
 ## Extending the Framework
 
-### Adding New Optimizers
+### Adding a New Optimizer
 
-1.  Implement your new optimizer class in `optimizers.py`, ensuring it inherits from `BaseOptimizer`.
-2.  Add your optimizer class to the `get_optimizer_class` function in `run.py`:
-    ```python
-    # In run.py
-    def get_optimizer_class(optimizer_name: str) -> BaseOptimizer:
-        if optimizer_name == "SGD":
-            return SGD
-        elif optimizer_name == "USNA":
-            return USNA
-        elif optimizer_name == "YourNewOptimizer": # Add this
-            return YourNewOptimizerClass
-        else:
-            raise ValueError(f"Unknown optimizer specified in config: {optimizer_name}")
-    ```
-3.  Create a YAML configuration file for your new optimizer in the `configs/optimizers/` directory.
+1.  **Implement Logic**: Add a new class inheriting from `BaseOptimizer` in `optimizers.py`.
+2.  **Register Class**: Add the new class to the `get_optimizer_class` function in `run.py`.
+3.  **Create Config**: Create a new YAML file in the `optimizers/` directory. It's best practice to create a `my_optimizer_base.yaml` in `optimizers/base/` and have specific variants inherit from it.
 
-### Adding New Objective Functions or Datasets
+### Adding a New Dataset
 
-1.  **Objective Functions**:
-    *   Implement your new objective function class in `objective_functions.py`, inheriting from `BaseObjectiveFunction`.
-    *   Update the `run_experiment` function in `run.py` if necessary to instantiate your new model type based on the problem configuration.
-2.  **Datasets**:
-    *   Implement your new dataset generation logic in `datasets.py`. This might involve creating a new `Dataset` or `IterableDataset` subclass.
-    *   Update the `run_experiment` function in `run.py` to call your new data generation function based on parameters in the problem configuration.
+1.  **Implement Loader**: In `datasets.py`, add a new loader function (e.g., `load_my_dataset`) and add a corresponding case in the `load_dataset_from_source` function.
+2.  **Create Config**: Create a problem YAML file in `problems/real/` that specifies the new `dataset` name.
