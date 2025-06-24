@@ -4,8 +4,6 @@ import traceback
 import hashlib
 import argparse
 
-import torch
-
 from utils import (
     RunCompletionManager,
     load_and_process_config,
@@ -50,10 +48,9 @@ def main():
         help="Number of random seeds to run for each experiment.",
     )
     parser.add_argument(
-        "--log-file",
-        type=str,
-        default=RunCompletionManager.DEFAULT_LOG_FILE,
-        help="Path to the log file for completed runs.",
+        "--check-runs",
+        action="store_true",
+        help="Only check for completed runs and report missing ones without running them.",
     )
     args = parser.parse_args()
 
@@ -68,19 +65,23 @@ def main():
         return
 
     # Set up a completion manager to handle resumes
-    completion_manager = RunCompletionManager(args.log_file)
+    completion_manager = RunCompletionManager()
+    missing_runs = []
 
     for p_path in problem_files:
         p_name = os.path.basename(p_path).replace(".yaml", "")
-        p_config_base = load_and_process_config(p_path, {})
+        print(f"Processing problem config: {p_name}")
+        p_config = load_and_process_config(p_path, {})
 
         # --- Create Context for Optimizer Configs ---
-        p_config = p_config_base.copy()  # Work with a copy
-        param_dim: int | None = None
-        dataset_params = p_config.get("dataset_params", {})
+        dataset_params = p_config.get("dataset_params")
+        if not dataset_params:
+            raise ValueError(f"Problem config '{p_name}' is missing 'dataset_params' field.")
 
+        param_dim: int | None = None
+        # Infer param_dim if not specified in the config
         if "param_dim" in dataset_params:
-            param_dim = int(dataset_params["param_dim"])
+            param_dim = dataset_params["param_dim"]
         elif "true_theta" in dataset_params:
             param_dim = len(dataset_params["true_theta"])
         else:
@@ -99,14 +100,10 @@ def main():
             param_dim = num_features + 1 if bias else num_features
             print(f"   Inferred param_dim = {param_dim}")
 
-        if param_dim is None:
-            raise ValueError(f"Could not determine 'param_dim' for problem '{p_name}'.")
-
-        if "dataset_params" not in p_config:
-            raise ValueError(f"Problem config '{p_name}' is missing 'dataset_params' field.")
+        print(f"   param_dim: {param_dim}")
         p_config["dataset_params"]["param_dim"] = param_dim
 
-        context = {"d": param_dim, "n": dataset_params.get("n_dataset", int(1e6))}
+        context = {"d": param_dim, "n": dataset_params.get("n_dataset")}
 
         for o_path in optimizer_files:
             o_name = os.path.basename(o_path).replace(".yaml", "")
@@ -114,6 +111,7 @@ def main():
 
             for i in range(args.num_seeds):
                 seed = i
+
                 # --- Create unique run ID and check for completion ---
                 current_run_config = {**p_config, **o_config, "seed": seed}
                 completion_id_stable_string = config_to_stable_string(current_run_config)
@@ -126,6 +124,12 @@ def main():
                     print(f"--- Skipping already completed run (ID: {unique_run_id}) ---")
                     continue
 
+                # If in check-only mode, record as missing and move on.
+                if args.check_completion:
+                    missing_runs.append(f"Problem='{p_name}', Optimizer='{o_name}', Seed={seed}")
+                    continue
+                # --- End of completion check ---
+
                 # --- W&B Init and Experiment Run ---
                 wandb_run = None
                 success = False
@@ -136,7 +140,7 @@ def main():
                     else:
                         try:
                             entity_to_use = wandb.api.default_entity
-                            print(f"--- Using default wandb aentity: '{entity_to_use}' ---")
+                            print(f"--- Using default wandb entity: '{entity_to_use}' ---")
                         except AttributeError:
                             print(
                                 "--- Could not determine default wandb entity. You may need to log in. Letting wandb decide. ---"
@@ -145,7 +149,8 @@ def main():
 
                     sanitized_p_name = sanitize_for_wandb(p_name)
                     group_name = sanitized_o_name
-                    wandb_run_name = unique_run_id
+                    # wandb_run_name = f"{sanitized_o_name}_{seed}"
+                    wandb_run_name = f"{sanitized_o_name}"
 
                     print(f"--- Starting run: {wandb_run_name} (Project: {sanitized_p_name}, Group: {group_name}) ---")
 
@@ -175,6 +180,15 @@ def main():
                         exit_code = 0 if success else 1
                         wandb.finish(exit_code=exit_code)
                         print(f"--- WandB run finished for {o_name} (Exit code: {exit_code}) ---")
+
+    if args.check_completion:
+        if missing_runs:
+            print("\n--- Missing Experiments ---")
+            print("The following experiment runs were not found in the completion log:")
+            for desc in missing_runs:
+                print(f"  - {desc}")
+        else:
+            print("\n--- All experiments are completed. ---")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import math
 import hashlib
 import glob
 from typing import List
+from collections import defaultdict
 
 
 def expand_file_patterns(patterns: List[str]) -> List[str]:
@@ -131,17 +132,27 @@ def process_config_values(config: dict, context: dict) -> dict:
 
 
 def config_to_stable_string(cfg_item):
+    """
+    Converts a config (possibly nested dict/list/tuple) into a deterministic string representation.
+
+    The "stable" in the name means that the output string is always the same for logically equivalent configs,
+    regardless of the original key order in dictionaries. This is important for hashing or comparing configs,
+    so that two configs with the same content but different key orders produce the same string.
+
+    Args:
+        cfg_item: The config item (dict, list, tuple, or primitive) to convert.
+
+    Returns:
+        str: A deterministic string representation of the config.
+    """
     if isinstance(cfg_item, dict):
-        # Sort keys, recursively process values
+        # Sort keys to ensure deterministic order
         return "{" + ",".join(f"{k}:{config_to_stable_string(v)}" for k, v in sorted(cfg_item.items())) + "}"
     elif isinstance(cfg_item, list):
-        # Process list items recursively
         return "[" + ",".join(config_to_stable_string(i) for i in cfg_item) + "]"
     elif isinstance(cfg_item, tuple):
-        # Process tuple items recursively
         return "(" + ",".join(config_to_stable_string(i) for i in cfg_item) + ")"
     else:
-        # Convert other types to string
         return str(cfg_item)
 
 
@@ -232,46 +243,52 @@ class RunCompletionManager:
             log_filepath (str): The path to the log file.
         """
         self.log_filepath = log_filepath
-        # Cache maps descriptive run name to wandb_id
-        self._completed_runs_cache: dict[str, str] | None = None
+        # Cache maps project name to a dict of {descriptive run name: wandb_id}
+        self._completed_runs_cache: dict[str, dict[str, str]] | None = None
         print(f"RunCompletionManager initialized with log file: {self.log_filepath}")
 
     def _read_log_file(self) -> None:
         """
         Reads the completion log file and populates the cache.
-        The cache maps the descriptive run name to its wandb ID.
+        The cache maps project names to a dictionary of {run_name: wandb_id}.
         """
-        completed_runs = {}
+        completed_runs_by_project = defaultdict(dict)
+        current_project = None
         try:
             with open(self.log_filepath, "r") as f:
                 for line in f:
-                    # A run is an indented line containing a comma
-                    if (
-                        line.strip()
-                        and not line.endswith(":")
-                        and "," in line
-                        and (line.startswith(" ") or line.startswith("\t"))
-                    ):
-                        parts = line.strip().split(",")
+                    stripped_line = line.strip()
+                    if not stripped_line:
+                        continue
+
+                    # Check for a project header (e.g., "my_project:")
+                    if stripped_line.endswith(":") and not line.startswith(" "):
+                        current_project = stripped_line[:-1]
+                        continue
+
+                    # Check for an indented run entry (e.g., "    run_name,wandb_id")
+                    if current_project and "," in stripped_line and (line.startswith(" ") or line.startswith("\t")):
+                        parts = stripped_line.split(",")
                         if len(parts) == 2:
                             run_name, wandb_id = parts
-                            completed_runs[run_name] = wandb_id
-            # Only print if file was actually read and had content potentially
-            if completed_runs or os.path.exists(self.log_filepath):
-                print(f"--> Read {len(completed_runs)} entries from completion log: {self.log_filepath}")
+                            completed_runs_by_project[current_project][run_name] = wandb_id
+
+            if completed_runs_by_project or os.path.exists(self.log_filepath):
+                total_runs = sum(len(p_runs) for p_runs in completed_runs_by_project.values())
+                print(f"--> Read {total_runs} entries from completion log: {self.log_filepath}")
+
         except FileNotFoundError:
             print(f"--> Completion log file not found (normal for first run): {self.log_filepath}")
-            # File doesn't exist yet, cache is an empty set
         except Exception as e:
             print(f"!!! Warning: Failed to read completion log file {self.log_filepath}: {e} !!!")
-            # In case of error, don't trust potentially partial cache
             self._completed_runs_cache = None  # Invalidate cache on error
             raise  # Re-raise the exception after logging
-        self._completed_runs_cache = completed_runs
+        self._completed_runs_cache = dict(completed_runs_by_project)
 
     def check_if_run_completed(self, expected_run_name: str) -> bool:
         """
         Checks if a run's descriptive name exists in the completion log cache.
+        For backward compatibility, this checks across all projects.
 
         Args:
             expected_run_name: The unique descriptive identifier for the run.
@@ -281,12 +298,15 @@ class RunCompletionManager:
         """
         if self._completed_runs_cache is None:
             self._read_log_file()
-            # _read_log_file sets the cache, handle potential None if error occurred during read
             if self._completed_runs_cache is None:
                 print("!!! Warning: Cache is None after attempting read, assuming run not completed due to read error.")
                 return False  # Cannot confirm completion if read failed
 
-        return expected_run_name in self._completed_runs_cache
+        # Check for the run name within any project
+        for project_runs in self._completed_runs_cache.values():
+            if expected_run_name in project_runs:
+                return True
+        return False
 
     def log_run_completion(self, run_name: str, wandb_id: str, project_name: str) -> None:
         """
@@ -327,7 +347,7 @@ class RunCompletionManager:
                 lines.insert(insert_index, new_run_line)
             else:  # Project header not found, so add it
                 # To keep it clean, add a newline before a new project if the file is not empty
-                if lines and not lines[-1].endswith("\n"):
+                if lines and not lines[-1].endswith(("\n", "\r")):
                     lines.append("\n")
                 lines.append(f"{project_header}\n")
                 lines.append(new_run_line)
@@ -340,8 +360,21 @@ class RunCompletionManager:
 
             # Update cache if it's already loaded
             if self._completed_runs_cache is not None:
-                self._completed_runs_cache[run_name] = wandb_id
+                if project_name not in self._completed_runs_cache:
+                    self._completed_runs_cache[project_name] = {}
+                self._completed_runs_cache[project_name][run_name] = wandb_id
         except Exception as e:
             print(f"  [Completion Log] Warning: Failed to write to completion log {self.log_filepath}: {e}")
             # Invalidate cache if write fails, as its state might be inconsistent
             self._completed_runs_cache = None
+
+
+def load_completion_log(log_filepath: str = RunCompletionManager.DEFAULT_LOG_FILE) -> dict:
+    """
+    Loads the completion log and returns it as a dictionary grouped by project.
+    This is a helper function for external scripts like visual.py.
+    """
+    manager = RunCompletionManager(log_filepath=log_filepath)
+    if manager._completed_runs_cache is None:
+        manager._read_log_file()
+    return manager._completed_runs_cache if manager._completed_runs_cache is not None else {}

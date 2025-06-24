@@ -94,8 +94,9 @@ def generate_accuracy_table(runs_to_fetch: List[Dict[str, Any]]) -> pd.DataFrame
             print("--- Could not determine default wandb entity. You may need to log in. ---")
             return pd.DataFrame()
 
-    api = wandb.Api()
+    api = wandb.Api(timeout=20)
     results_by_config = defaultdict(lambda: defaultdict(lambda: {"train_accs": [], "test_accs": []}))
+    not_found_runs = []
 
     for run_info in runs_to_fetch:
         p_name = run_info["p_name"]
@@ -106,9 +107,10 @@ def generate_accuracy_table(runs_to_fetch: List[Dict[str, Any]]) -> pd.DataFrame
             print(f"Fetching run: {run_path}")
             run = api.run(run_path)
             summary = run.summary
-            summary_retries = 5
+            summary_retries = 10
             while ("train_accuracy" not in summary or "test_accuracy" not in summary) and summary_retries > 0:
-                time.sleep(5)
+                print(f"  ...metrics not found, retrying in 10s ({summary_retries} retries left)")
+                time.sleep(10)
                 run.scan_history()
                 summary = run.summary
                 summary_retries -= 1
@@ -119,6 +121,7 @@ def generate_accuracy_table(runs_to_fetch: List[Dict[str, Any]]) -> pd.DataFrame
                 print(f"Warning: Could not find train/test accuracy for {run_path}. Skipping.")
         except wandb.errors.CommError:
             print(f"Could not find run {run_path} on wandb servers.")
+            not_found_runs.append(run_info)
         except Exception as e:
             print(f"   An unexpected error occurred while fetching {run_path}: {e}")
 
@@ -136,6 +139,12 @@ def generate_accuracy_table(runs_to_fetch: List[Dict[str, Any]]) -> pd.DataFrame
                     {"Dataset": p_name, "Set": "Test", "Optimizer": o_name, "Accuracy": avg_test_acc * 100}
                 )
 
+    if not_found_runs:
+        print("\n--- The following runs were in the log but not found on W&B ---")
+        for run in not_found_runs:
+            print(f"  - Problem: {run['p_name']}, Optimizer: {run['o_name']}, Seed: {run['seed']}")
+        print("You may need to delete '.completed_runs.log' and re-run experiments if these runs are invalid.")
+
     if not all_results:
         print("No results found.")
         return pd.DataFrame()
@@ -145,11 +154,12 @@ def generate_accuracy_table(runs_to_fetch: List[Dict[str, Any]]) -> pd.DataFrame
 def generate_plots(runs_to_fetch: List[Dict[str, Any]]):
     print("\n--- Fetching results from W&B for plotting... ---")
     entity_to_use = WANDB_ENTITY
-    api = wandb.Api()
+    api = wandb.Api(timeout=20)
 
     metrics_to_plot = ["estimation_error", "inv_hess_error_fro"]
     data_for_plots = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     optimizer_times = defaultdict(lambda: defaultdict(list))
+    not_found_runs = []
 
     for run_info in runs_to_fetch:
         p_name, o_name = run_info["p_name"], run_info["o_name"]
@@ -167,6 +177,9 @@ def generate_plots(runs_to_fetch: List[Dict[str, Any]]):
             # Fetch summary for bar plot
             if "optimizer_time" in run.summary:
                 optimizer_times[p_name][o_name].append(run.summary["optimizer_time"])
+        except wandb.errors.CommError:
+            print(f"Could not find run {run_path} on wandb servers.")
+            not_found_runs.append(run_info)
         except Exception as e:
             print(f"Could not fetch data for run {run_path}: {e}")
 
@@ -205,6 +218,12 @@ def generate_plots(runs_to_fetch: List[Dict[str, Any]]):
             plt.savefig(os.path.join(plot_dir, f"{p_name}_optimizer_time.png"))
             plt.close()
 
+    if not_found_runs:
+        print("\n--- The following runs were in the log but not found on W&B ---")
+        for run in not_found_runs:
+            print(f"  - Problem: {run['p_name']}, Optimizer: {run['o_name']}, Seed: {run['seed']}")
+        print("You may need to delete '.completed_runs.log' and re-run experiments if these runs are invalid.")
+
     print(f"Plots saved to '{plot_dir}/' directory.")
 
 
@@ -218,7 +237,13 @@ def format_table(df: pd.DataFrame) -> pd.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a results table or plots from completed experiments.")
-    parser.add_argument("action", choices=["table", "plot"], help="Action to perform: generate a 'table' or a 'plot'.")
+    parser.add_argument(
+        "-a",
+        "--action",
+        choices=["table", "plot"],
+        required=True,
+        help="Action to perform: generate a 'table' or a 'plot'.",
+    )
     parser.add_argument(
         "-p",
         "--problems",
