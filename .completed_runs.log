@@ -37,50 +37,50 @@ logistic_random_d-1000_N-1e7:
     Stream_mSNA_ell-0_5_6e6a6887_0,ijq75sks
     Stream_mSNA_init_hess-10d_adf9cbe3_0,rho138v3
 adult_test:
-    Stream_SGD_985b41da_0,nabhygye
-    Stream_mSNA_302ef731_0,nknwpzrt
+    Stream_SGD_985b41da_0,e8rcxoeh
+    Stream_mSNA_302ef731_0,tlrn8x2h
 phishing_test:
-    Stream_SGD_c4da66e4_0,n8saciv1
-    Stream_mSNA_2bfdc5a3_0,26znrwso
+    Stream_SGD_c4da66e4_0,m7hzten0
+    Stream_mSNA_2bfdc5a3_0,r7wa2ae5
 adult:
-    Stream_SGD_4c2293cd_0,mo9xrki6
-    Stream_SNA_4c462253_0,5ooif8h6
-    Stream_mSNA_6042256e_0,w0qhas00
-    Stream_mSNA_ell-0_25_0fc4e00a_0,d4zg2njw
-    Stream_mSNA_ell-0_5_dc529132_0,m4rsg581
-    Stream_mSNA_init_hess-10d_981433a4_0,zcltijmp
+    Stream_SGD_4c2293cd_0,txw7bo63
+    Stream_SNA_4c462253_0,72llg9wm
+    Stream_mSNA_6042256e_0,pwtnuuln
+    Stream_mSNA_ell-0_25_0fc4e00a_0,zvrj1diz
+    Stream_mSNA_ell-0_5_dc529132_0,670hopoo
+    Stream_mSNA_init_hess-10d_981433a4_0,dstosqut
 connect-4:
-    Stream_SGD_3ec2f195_0,3wpfw1y6
-    Stream_SNA_b23433a3_0,7bmsoupe
-    Stream_mSNA_9f6cdbc4_0,8kn1squh
-    Stream_mSNA_ell-0_25_5ab2b657_0,uqhema2m
-    Stream_mSNA_ell-0_5_0f974be4_0,y43bypsa
-    Stream_mSNA_init_hess-10d_f929fbd5_0,mqvyo2ff
+    Stream_SGD_3ec2f195_0,1ei1ejkh
+    Stream_SNA_b23433a3_0,16p27lxg
+    Stream_mSNA_9f6cdbc4_0,g1uo6utv
+    Stream_mSNA_ell-0_25_5ab2b657_0,nlo54nvn
+    Stream_mSNA_ell-0_5_0f974be4_0,nk9hhlye
+    Stream_mSNA_init_hess-10d_f929fbd5_0,llu1ld2g
 covtype_sklearn:
-    Stream_SGD_99eae543_0,ffe0s3zg
-    Stream_SNA_bd03ff83_0,zlyt579d
-    Stream_mSNA_33233d89_0,cwc8cbu0
-    Stream_mSNA_ell-0_25_9fc37aa7_0,pl8ryygb
-    Stream_mSNA_ell-0_5_499a85bf_0,v0ymwezi
-    Stream_mSNA_init_hess-10d_3763c4db_0,dg9y8ayq
+    Stream_SGD_99eae543_0,lkb1ypzp
+    Stream_SNA_bd03ff83_0,rat09r82
+    Stream_mSNA_33233d89_0,ipv0ddtf
+    Stream_mSNA_ell-0_25_9fc37aa7_0,78v1nj8x
+    Stream_mSNA_ell-0_5_499a85bf_0,ymfocbs3
+    Stream_mSNA_init_hess-10d_3763c4db_0,7jjiu4v5
 mnist:
-    Stream_SGD_bdc16367_0,uqjmn5d3
-    Stream_SNA_5450c1d0_0,1ya7mh50
-    Stream_mSNA_8971e753_0,51yt0cvk
-    Stream_mSNA_ell-0_25_29106673_0,g34l9w7c
-    Stream_mSNA_ell-0_5_b5dabe3a_0,2ngmik6q
-    Stream_mSNA_init_hess-10d_b2f3bfdf_0,h7gn8ere
+    Stream_SGD_bdc16367_0,vq7i6sig
+    Stream_SNA_5450c1d0_0,2kw9aled
+    Stream_mSNA_8971e753_0,nh1z0cgx
+    Stream_mSNA_ell-0_25_29106673_0,j83zg4f2
+    Stream_mSNA_ell-0_5_b5dabe3a_0,cw9gfb5n
+    Stream_mSNA_init_hess-10d_b2f3bfdf_0,tx5xou0w
 mushrooms:
-    Stream_SGD_77c07c18_0,1ru59rsa
-    Stream_SNA_321c59f2_0,qkfz5r3v
-    Stream_mSNA_f075f406_0,5jq0lrex
-    Stream_mSNA_ell-0_25_292317c1_0,n2cwsems
-    Stream_mSNA_ell-0_5_4a5f3e93_0,ek34md1x
-    Stream_mSNA_init_hess-10d_9c814429_0,8cduluhu
+    Stream_SGD_77c07c18_0,97dqiteu
+    Stream_SNA_321c59f2_0,ik0ivgp6
+    Stream_mSNA_f075f406_0,xefvv6ut
+    Stream_mSNA_ell-0_25_292317c1_0,pidc8483
+    Stream_mSNA_ell-0_5_4a5f3e93_0,x3mja4sd
+    Stream_mSNA_init_hess-10d_9c814429_0,l8ey38nx
 phishing:
-    Stream_SGD_fb239195_0,obpvdhyq
-    Stream_SNA_7b26e588_0,23hbxkkt
-    Stream_mSNA_f819928c_0,wlh97cal
-    Stream_mSNA_ell-0_25_c2fa4f47_0,p748grtl
-    Stream_mSNA_ell-0_5_7f0b2e37_0,wkeqwgcz
-    Stream_mSNA_init_hess-10d_8e340295_0,eex6pufw
+    Stream_SGD_fb239195_0,0l2t6myt
+    Stream_SNA_7b26e588_0,29xhryvl
+    Stream_mSNA_f819928c_0,16elilbr
+    Stream_mSNA_ell-0_25_c2fa4f47_0,ne9fkii4
+    Stream_mSNA_ell-0_5_7f0b2e37_0,1wj2gvbu
+    Stream_mSNA_init_hess-10d_8e340295_0,nmullivr

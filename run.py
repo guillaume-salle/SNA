@@ -2,7 +2,7 @@ import time
 import wandb
 import math
 from tqdm import tqdm
-from typing import Tuple, Dict, Any
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, IterableDataset
@@ -68,7 +68,7 @@ def evaluate_on_set(
             loss = model((X_batch, y_batch), param)
             total_loss += loss.item() * X_batch.size(0)
 
-            if model_name == "LogisticRegression":
+            if model_name.lower() == "logistic_regression":
                 phi_batch = model._add_bias(X_batch)
                 logits = torch.matmul(phi_batch, param)
                 predictions = (torch.sigmoid(logits) > 0.5).float()
@@ -401,24 +401,33 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
     # Final metrics
     log_data_final = {}
 
+    log_data_final["optimizer_time"] = optimizer_time_cumulative
+
     if compute_theta_error:
         final_error = torch.linalg.vector_norm(optimizer.param - true_theta).item() ** 2
         print(f"   Final estimation error: {final_error:.4f}")
     else:
+        # For real datasets, evaluate on train and test sets
+        if train_set is not None and not isinstance(train_set, IterableDataset):
+            print("   Calculating accuracy and loss on the train set...")
+            final_train_metrics = evaluate_on_set(
+                train_set, model, optimizer.param, device, model_name, set_name="train"
+            )
+            for key, value in final_train_metrics.items():
+                # Strip prefix for cleaner final print summary
+                metric_name = key.replace("train_", "")
+                print(f"   Train Set {metric_name.capitalize()}: {value:.4f}")
+                log_data_final[f"final_{key}"] = value
+
         # Compute and log test accuracy if test_set is available
         if test_set is not None:
-            print(f"   Calculating accuracy and loss on the test set...")
+            print("   Calculating accuracy and loss on the test set...")
             final_test_metrics = evaluate_on_set(test_set, model, optimizer.param, device, model_name, set_name="test")
             for key, value in final_test_metrics.items():
                 # Strip prefix for cleaner final print summary
                 metric_name = key.replace("test_", "")
                 print(f"   Test Set {metric_name.capitalize()}: {value:.4f}")
-                log_data_final[key] = value
-        else:
-            print(f"   Skipped test set accuracy calculation (not applicable for this model type).")
-
-    # Final metrics
-    log_data_final["optimizer_time"] = optimizer_time_cumulative
+                log_data_final[f"final_{key}"] = value
 
     # Log the final optimizer metrics, if they exist
     if hasattr(optimizer, "log_metrics_end") and isinstance(optimizer.log_metrics_end, dict):

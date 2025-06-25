@@ -2,7 +2,6 @@ import os
 import yaml
 import collections.abc
 import math
-import hashlib
 import glob
 from typing import List
 from collections import defaultdict
@@ -247,6 +246,12 @@ class RunCompletionManager:
         self._completed_runs_cache: dict[str, dict[str, str]] | None = None
         print(f"RunCompletionManager initialized with log file: {self.log_filepath}")
 
+    def get_log_data(self) -> dict[str, dict[str, str]]:
+        """Reads the log file if not already cached and returns the cache."""
+        if self._completed_runs_cache is None:
+            self._read_log_file()
+        return self._completed_runs_cache if self._completed_runs_cache is not None else {}
+
     def _read_log_file(self) -> None:
         """
         Reads the completion log file and populates the cache.
@@ -266,12 +271,22 @@ class RunCompletionManager:
                         current_project = stripped_line[:-1]
                         continue
 
-                    # Check for an indented run entry (e.g., "    run_name,wandb_id")
+                    # Check for an indented run entry
                     if current_project and "," in stripped_line and (line.startswith(" ") or line.startswith("\t")):
-                        parts = stripped_line.split(",")
-                        if len(parts) == 2:
+                        parts = [p.strip() for p in stripped_line.split(",")]
+                        if len(parts) == 3:
+                            run_name, wandb_id, local_dir = parts
+                            # Store both wandb_id and local_dir
+                            completed_runs_by_project[current_project][run_name] = {
+                                "wandb_id": wandb_id,
+                                "local_dir": local_dir,
+                            }
+                        elif len(parts) == 2:  # Legacy support
                             run_name, wandb_id = parts
-                            completed_runs_by_project[current_project][run_name] = wandb_id
+                            completed_runs_by_project[current_project][run_name] = {
+                                "wandb_id": wandb_id,
+                                "local_dir": None,
+                            }
 
             if completed_runs_by_project or os.path.exists(self.log_filepath):
                 total_runs = sum(len(p_runs) for p_runs in completed_runs_by_project.values())
@@ -308,14 +323,15 @@ class RunCompletionManager:
                 return True
         return False
 
-    def log_run_completion(self, run_name: str, wandb_id: str, project_name: str) -> None:
+    def log_run_completion(self, run_name: str, wandb_id: str, local_dir: str, project_name: str) -> None:
         """
-        Logs a completed run by mapping its descriptive name to its wandb ID.
+        Logs a completed run by mapping its descriptive name to its wandb ID and local directory.
         This method is not thread-safe but is sufficient for sequential runs.
 
         Args:
             run_name (str): The unique descriptive identifier of the completed run.
             wandb_id (str): The actual ID assigned by wandb.
+            local_dir (str): The path to the local wandb run directory.
             project_name (str): The name of the project for grouping.
         """
         try:
@@ -328,8 +344,8 @@ class RunCompletionManager:
 
             # Prepare the new entries
             project_header = f"{project_name}:"
-            # New line format includes the wandb ID
-            new_run_line = f"    {run_name},{wandb_id}\n"
+            # New line format includes the wandb ID and the local directory
+            new_run_line = f"    {run_name},{wandb_id},{local_dir}\n"
 
             project_index = -1
             for i, line in enumerate(lines):
@@ -362,19 +378,8 @@ class RunCompletionManager:
             if self._completed_runs_cache is not None:
                 if project_name not in self._completed_runs_cache:
                     self._completed_runs_cache[project_name] = {}
-                self._completed_runs_cache[project_name][run_name] = wandb_id
+                self._completed_runs_cache[project_name][run_name] = {"wandb_id": wandb_id, "local_dir": local_dir}
         except Exception as e:
             print(f"  [Completion Log] Warning: Failed to write to completion log {self.log_filepath}: {e}")
             # Invalidate cache if write fails, as its state might be inconsistent
             self._completed_runs_cache = None
-
-
-def load_completion_log(log_filepath: str = RunCompletionManager.DEFAULT_LOG_FILE) -> dict:
-    """
-    Loads the completion log and returns it as a dictionary grouped by project.
-    This is a helper function for external scripts like visual.py.
-    """
-    manager = RunCompletionManager(log_filepath=log_filepath)
-    if manager._completed_runs_cache is None:
-        manager._read_log_file()
-    return manager._completed_runs_cache if manager._completed_runs_cache is not None else {}
