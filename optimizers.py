@@ -3,8 +3,9 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 import math
 from objective_functions import BaseObjectiveFunction
-import torch.nn.functional as F
 import traceback
+from torch.utils.data import DataLoader
+import wandb
 
 
 class BaseOptimizer(ABC):
@@ -77,20 +78,35 @@ class BaseOptimizer(ABC):
 
     def initialize(
         self,
-        initial_data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
-        gd_steps: int,
+        train_set: torch.utils.data.Dataset,
+        initialization_params: dict,
         gd_lr: float,
     ) -> None:
         """
-        Performs deterministic Gradient Descent on a small initial dataset
+        Performs deterministic Gradient Descent on a large initial dataset
         to find a better starting point (theta_init) for the main optimization.
 
         Args:
-            initial_data: A batch of data to use for initialization.
-            gd_steps (int): The number of gradient descent steps to perform.
+            train_set: The training dataset to sample a large batch from.
+            initialization_params (dict): GD steps and batch size fraction.
             gd_lr (float): The learning rate for the gradient descent.
         """
+        gd_steps = initialization_params.get("gd_steps", 100)
+        batch_size_fraction = initialization_params.get("batch_size_fraction", 0.1)
+
+        init_batch_size = min(int(len(train_set) * batch_size_fraction), 5000)
+        if init_batch_size == 0:
+            print("   [Initializer] Warning: Initial batch size is 0. Skipping initialization.")
+            return
+
         print(f"   [Initializer] Performing {gd_steps} steps of deterministic GD...")
+        print(f"   [Initializer] GD params: lr={gd_lr}, batch_size={init_batch_size}")
+
+        # Create a single large batch for the initialization.
+        data_loader = DataLoader(train_set, batch_size=init_batch_size, shuffle=True)
+        initial_data_cpu = next(iter(data_loader))
+        initial_data = tuple(item.to(self.device) for item in initial_data_cpu)
+
         # Use param_not_avg for the GD updates, which will also update self.param if not averaged
         temp_param = self.param_not_avg.clone().detach().requires_grad_(False)
 
@@ -98,8 +114,9 @@ class BaseOptimizer(ABC):
             grad = self.obj_function.grad(initial_data, temp_param)
             temp_param.add_(grad, alpha=-gd_lr)
             if (step + 1) % 10 == 0:
-                loss = self.obj_function(initial_data, temp_param)
-                print(f"   [Initializer] GD Step {step+1}/{gd_steps}, Loss: {loss.item():.4f}")
+                with torch.no_grad():
+                    loss = self.obj_function(initial_data, temp_param)
+                    wandb.log({"initializer_loss": loss.item()})
 
         # Update the optimizer's parameters with the result of the GD
         self.param_not_avg.copy_(temp_param)
@@ -236,8 +253,8 @@ class mSNA(BaseOptimizer):
             lr_add=lr_add,
             averaged=averaged,
             batch_size=batch_size,
-            device=device,
             log_weight=log_weight,
+            device=device,
         )
 
         self.lr_hess_exp = lr_hess_exp
@@ -393,7 +410,6 @@ class mSNA(BaseOptimizer):
             self.matrix.copy_(symmetrized_matrix)
             if self.averaged_matrix:
                 self.matrix_avg.copy_(symmetrized_matrix)
-                self.sum_weights_matrix = 0.0  # Reset averaging
 
             eigenvalues = torch.linalg.eigvalsh(self.matrix)
             print(f"   [mSNA] Successfully initialized matrix.")
@@ -751,8 +767,8 @@ class SNA(BaseOptimizer):
             lr_add=lr_add,
             averaged=averaged,
             batch_size=batch_size,
-            device=device,
             log_weight=log_weight,
+            device=device,
         )
 
         self.init_id_weight = float(init_id_weight) / float(batch_size)

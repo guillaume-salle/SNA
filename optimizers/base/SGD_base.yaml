@@ -6,4 +6,4 @@ optimizer_params:
   averaged: false
   batch_size: 1
   # log_weight:
-  # device: 
+  # device:

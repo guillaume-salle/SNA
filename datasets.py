@@ -430,7 +430,7 @@ def _split_and_convert_to_torch(
     X_test = torch.tensor(X_test_np, dtype=torch.float32, device="cpu")
     Y_test = torch.tensor(y_test_np, dtype=torch.float32, device="cpu").squeeze()
 
-    number_features = X_train.shape[1]
+    number_features = X_train.shape[1] if X_train.shape[0] > 0 else X_np.shape[1]
     print(f"Finished splitting and converting {dataset_name} dataset.")
     print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train.shape}")
     print(f"  Validation X shape: {X_val.shape}, Validation Y shape: {Y_val.shape}")
@@ -459,7 +459,13 @@ def load_openml_dataset(
         print("  Note: Using version 2 of connect-4 dataset to avoid issues with version 1.")
         version_to_fetch = 2
     elif dataset_name == "PhishingWebsites":
-        print("  Note: Using version 2 of PhishingWebsites dataset to ensure consistency.")
+        print("  Note: Using version 2 of PhishingWebsites dataset.")
+        version_to_fetch = 1
+    elif dataset_name == "adult":
+        print("  Note: Using version 2 of adult dataset.")
+        version_to_fetch = 2
+    elif dataset_name == "mushroom":
+        print("  Note: Using version 1 of mushroom dataset.")
         version_to_fetch = 1
 
     start_time = time.time()

@@ -10,80 +10,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from objective_functions import LinearRegression, LogisticRegression, BaseObjectiveFunction
 from optimizers import SGD, mSNA, SNA, BaseOptimizer
 from datasets import generate_regression, load_dataset_from_source
-
-
-def get_optimizer_class(optimizer_name: str) -> type[BaseOptimizer]:
-    if optimizer_name == "SGD":
-        return SGD
-    elif optimizer_name == "mSNA":
-        return mSNA
-    elif optimizer_name == "SNA":
-        return SNA
-    else:
-        raise ValueError(f"Unknown optimizer specified in config: {optimizer_name}")
-
-
-def get_obj_function_class(model_type: str) -> Any:
-    model_type_lower = model_type.lower()
-    if model_type_lower == "linear_regression":
-        return LinearRegression
-    elif model_type_lower == "logistic_regression":
-        return LogisticRegression
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
-
-
-# --- Helper Function for Evaluation ---
-def evaluate_on_set(
-    eval_set: torch.utils.data.Dataset,
-    model: BaseObjectiveFunction,
-    param: torch.Tensor,
-    device: str,
-    model_name: str,
-    set_name: str,
-    eval_batch_size: int = 512,
-    subset_size: int | None = None,
-) -> dict:
-    """Helper to evaluate loss and accuracy on a given dataset or a subset of it."""
-    if eval_set is None or len(eval_set) == 0:
-        return {}
-
-    sampler = None
-    if subset_size and subset_size < len(eval_set):
-        # Use a random subset of the data for evaluation
-        indices = torch.randperm(len(eval_set))[:subset_size]
-        sampler = torch.utils.data.SubsetRandomSampler(indices)
-        total_samples = subset_size
-    else:
-        total_samples = len(eval_set)
-
-    eval_loader = DataLoader(eval_set, batch_size=eval_batch_size, pin_memory=(device == "cuda"), sampler=sampler)
-    total_loss = 0.0
-    all_predictions = []
-    all_targets = []
-
-    with torch.no_grad():
-        for X_batch_cpu, y_batch_cpu in eval_loader:
-            X_batch, y_batch = X_batch_cpu.to(device), y_batch_cpu.to(device)
-            loss = model((X_batch, y_batch), param)
-            total_loss += loss.item() * X_batch.size(0)
-
-            if model_name.lower() == "logistic_regression":
-                phi_batch = model._add_bias(X_batch)
-                logits = torch.matmul(phi_batch, param)
-                predictions = (torch.sigmoid(logits) > 0.5).float()
-                all_predictions.append(predictions.cpu())
-                all_targets.append(y_batch_cpu.squeeze())
-
-    metrics = {}
-    if total_samples > 0:
-        metrics[f"{set_name}_loss"] = total_loss / total_samples
-        if all_predictions:
-            predictions_tensor = torch.cat(all_predictions)
-            targets_tensor = torch.cat(all_targets)
-            correct_predictions = (predictions_tensor == targets_tensor).sum().item()
-            metrics[f"{set_name}_accuracy"] = correct_predictions / total_samples
-    return metrics
+from utils import evaluate_on_set, get_obj_function_class, get_optimizer_class
 
 
 def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, project_name: str) -> None:
@@ -217,13 +144,15 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         bias = problem_config["model_params"].get("bias")
         param_dim = number_features + 1 if bias else number_features
 
-    # Initialize theta_init on a sphere of 'radius' around true_theta
-    if true_theta is not None:
-        # For synthetic data, initialize around true_theta using radius
+    # --- Initialization of theta_init ---
+    if "synthetic" in dataset_name:
+        if true_theta is None:
+            raise ValueError("true_theta is required for synthetic datasets")
+        # Initialize theta_init on a sphere of 'radius' around true_theta
         random_direction = torch.randn_like(true_theta)
         random_direction /= torch.linalg.vector_norm(random_direction)
         theta_init = true_theta + radius * random_direction
-    else:
+    else:  # real dataset
         print(f"Initializing theta_init to zeros for real dataset (param_dim: {param_dim})")
         theta_init = torch.zeros(param_dim, device=device, dtype=torch.float32)
 
@@ -231,6 +160,27 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
     optimizer: BaseOptimizer
     optimizer_class = get_optimizer_class(optimizer_name)
     optimizer = optimizer_class(param=theta_init, obj_function=model, **optimizer_params)
+
+    if not "synthetic" in dataset_name and problem_config.get("init_theta", False):
+        print("\n--- Running Initializer Phase for Real Dataset ---")
+        # Check for optimal_lr in the problem config before proceeding
+        if "optimal_lr" not in problem_config:
+            raise ValueError("The 'optimal_lr' field must be specified in the problem config to run the initializer.")
+        optimal_lr = problem_config["optimal_lr"]
+        initialization_params = problem_config.get("initialization", {})
+        optimizer.initialize(train_set, initialization_params, optimal_lr)
+
+        # Adjust lr_add based on optimal_lr so that the first step sizes are not too large
+        if optimal_lr > 0:
+            original_lr_add = optimizer.lr_add
+            optimizer.lr_add = min((1 / optimal_lr) - 1, 0.0)
+            print(
+                f"   [LR Adjust] Overriding optimizer's lr_add. Old: {original_lr_add:.4f}, New: {optimizer.lr_add:.4f}"
+            )
+        else:
+            print("   [LR Adjust] Warning: optimal_lr is not positive, cannot adjust lr_add.")
+
+        print("--- Finished Initializer Phase ---\n")
 
     # --- Initial State Logging (before any optimizer steps) ---
     log_data_initial = {
@@ -267,7 +217,7 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
 
     # Initial test set evaluation
     if test_set is not None:
-        initial_test_metrics = evaluate_on_set(test_set, model, theta_init, device, model_name, set_name="test")
+        initial_test_metrics = evaluate_on_set(test_set, model, optimizer.param, device, model_name, set_name="test")
         log_data_initial.update(initial_test_metrics)
 
     wandb.log(log_data_initial)
@@ -437,5 +387,4 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
     else:
         print("   No final optimizer metrics to log")
 
-    print(log_data_final)
     wandb.log(log_data_final)

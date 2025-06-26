@@ -3,8 +3,19 @@ import yaml
 import collections.abc
 import math
 import glob
-from typing import List
+from typing import List, Dict, Any
 from collections import defaultdict
+import json
+import pandas as pd
+import matplotlib.pyplot as plt
+import torch
+from torch.utils.data import DataLoader
+from objective_functions import (
+    BaseObjectiveFunction,
+    LinearRegression,
+    LogisticRegression,
+)
+from optimizers import SGD, mSNA, SNA, BaseOptimizer
 
 
 def expand_file_patterns(patterns: List[str]) -> List[str]:
@@ -174,7 +185,7 @@ def load_and_process_config(config_path: str, context: dict) -> dict:
     config = load_config(config_path)
 
     # The context should be passed to the value processing function
-    processed_config = process_config_values(config, context)
+    processed_config = process_config_values(config, context or {})
     return processed_config
 
 
@@ -344,35 +355,49 @@ class RunCompletionManager:
 
             # Prepare the new entries
             project_header = f"{project_name}:"
-            # New line format includes the wandb ID and the local directory
             new_run_line = f"    {run_name},{wandb_id},{local_dir}\n"
-
             project_index = -1
+            run_found_and_updated = False
+
+            # Find the project block and try to update the run if it exists
             for i, line in enumerate(lines):
                 if line.strip() == project_header:
                     project_index = i
-                    break
+                    # Search within the project block
+                    for j in range(i + 1, len(lines)):
+                        # Stop if we hit the next project or end of file
+                        if not lines[j].strip() or not lines[j].startswith((" ", "\t")):
+                            break
+                        # Check if the run name matches at the start of the line
+                        if lines[j].strip().startswith(run_name + ","):
+                            lines[j] = new_run_line
+                            run_found_and_updated = True
+                            break
+                    break  # Project found, no need to search further
 
-            if project_index != -1:
-                # Find where to insert the new run within the project block
-                insert_index = project_index + 1
-                while insert_index < len(lines) and (
-                    lines[insert_index].startswith(" ") or lines[insert_index].startswith("\t")
-                ):
-                    insert_index += 1
-                lines.insert(insert_index, new_run_line)
-            else:  # Project header not found, so add it
-                # To keep it clean, add a newline before a new project if the file is not empty
-                if lines and not lines[-1].endswith(("\n", "\r")):
-                    lines.append("\n")
-                lines.append(f"{project_header}\n")
-                lines.append(new_run_line)
+            # If the run was not found and updated, it needs to be added.
+            if not run_found_and_updated:
+                if project_index != -1:
+                    # Project exists, find where to insert the new run
+                    insert_index = project_index + 1
+                    while insert_index < len(lines) and lines[insert_index].startswith((" ", "\t")):
+                        insert_index += 1
+                    lines.insert(insert_index, new_run_line)
+                else:
+                    # Project doesn't exist, create it and add the run
+                    if lines and not lines[-1].endswith(("\n", "\r")):
+                        lines.append("\n")
+                    lines.append(f"{project_header}\n")
+                    lines.append(new_run_line)
 
             # Write the updated content back to the file
             with open(self.log_filepath, "w") as f:
                 f.writelines(lines)
 
-            print(f"  [Completion Log] Added run to log under project '{project_name}': {run_name} -> {wandb_id}")
+            log_action = "Updated" if run_found_and_updated else "Added"
+            print(
+                f"  [Completion Log] {log_action} run in log under project '{project_name}': {run_name} -> {wandb_id}"
+            )
 
             # Update cache if it's already loaded
             if self._completed_runs_cache is not None:
@@ -383,3 +408,643 @@ class RunCompletionManager:
             print(f"  [Completion Log] Warning: Failed to write to completion log {self.log_filepath}: {e}")
             # Invalidate cache if write fails, as its state might be inconsistent
             self._completed_runs_cache = None
+
+
+# ============================================================================ #
+# >>> Visualization Utilities <<<
+# ============================================================================ #
+
+
+def parse_local_run(local_dir: str, metrics_to_plot: List[str]) -> Dict | None:
+    """
+    Parses summary and history files from a local wandb run directory.
+    It robustly fetches both final (scalar) metrics and time-series data.
+    """
+    if not local_dir or not os.path.isdir(local_dir):
+        print(f"Warning: local directory not found or invalid: {local_dir}")
+        return None
+
+    summary_file = os.path.join(local_dir, "wandb-summary.json")
+    history_file = os.path.join(local_dir, "wandb-history.jsonl")
+
+    # 1. Parse the history file (.jsonl) to get time-series data and the last entry.
+    metric_history = {metric: [] for metric in metrics_to_plot}
+    last_history_item = {}
+    try:
+        with open(history_file, "r") as f:
+            for line in f:
+                try:
+                    history_item = json.loads(line)
+                    last_history_item = history_item  # Continuously update to get the last valid line
+                except json.JSONDecodeError:
+                    continue  # Skip corrupted lines
+
+                # For metrics that need a full plot, collect their history.
+                if "samples" in history_item:
+                    for metric in metrics_to_plot:
+                        if metric in history_item:
+                            metric_history[metric].append(
+                                {"samples": history_item["samples"], metric: history_item[metric]}
+                            )
+    except (FileNotFoundError, IOError):
+        print(f"Warning: History file not found in {local_dir}. Only final metrics will be available.")
+
+    # 2. Get final metric values. The summary file is the primary source.
+    final_metrics = {}
+    try:
+        with open(summary_file, "r") as f:
+            final_metrics = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, IOError):
+        # If the summary file is missing or corrupt, use the last history line as a fallback.
+        final_metrics = last_history_item
+        if final_metrics:
+            print(f"Warning: Summary file not found in {local_dir}. Using last history line for final metrics.")
+
+    # 3. Assemble the final run_data dictionary.
+    # Start with the final metrics.
+    run_data: Dict[str, Any] = {**final_metrics}
+    # Add the history data under the "history" key.
+    run_data["history"] = {metric: data for metric, data in metric_history.items() if data}
+
+    return run_data
+
+
+def format_table(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    # Pivot the table to get optimizers as columns and metrics as rows
+    pivot_df = df.pivot_table(index=["Dataset", "Metric"], columns="Optimizer", values="Value")
+
+    # Define a formatter for the time values
+    def format_time(seconds):
+        if pd.isna(seconds):
+            return ""
+        if seconds < 1.0:
+            return f"{seconds * 1000:.1f} ms"
+        else:
+            return f"{seconds:.2f} s"
+
+    # Create a new DataFrame for formatted strings to avoid warnings
+    formatted_df = pd.DataFrame(index=pivot_df.index, columns=pivot_df.columns, dtype=object)
+
+    for idx, row in pivot_df.iterrows():
+        metric_name = idx[1]
+
+        # Determine the best value and its column name
+        if metric_name in ["Train Acc", "Test Acc"]:
+            best_val = row.max()
+        else:  # For Time and Loss, lower is better
+            best_val = row.min()
+
+        for col_name, value in row.items():
+            is_best = value == best_val
+            prefix = "* " if is_best else "  "
+
+            # Apply formatting based on metric type
+            if metric_name == "Time":
+                formatted_value = format_time(value)
+            elif "Acc" in metric_name:
+                formatted_value = f"{value:.2f}"
+            elif "Loss" in metric_name:
+                formatted_value = f"{value:.2e}"
+            else:
+                formatted_value = str(value)
+
+            formatted_df.loc[idx, col_name] = prefix + formatted_value
+
+    # Reorder the metrics to a logical sequence
+    metric_order = ["Train Acc", "Test Acc", "Train Loss", "Test Loss", "Time"]
+    formatted_df = formatted_df.reindex(metric_order, level="Metric")
+
+    # Clean up the index names for presentation
+    formatted_df.index.names = ["Dataset", ""]
+
+    return formatted_df
+
+
+def generate_accuracy_table(runs: List[Dict[str, Any]]):
+    print("\n--- Generating accuracy table from local run data... ---")
+    results_by_config = defaultdict(
+        lambda: defaultdict(
+            lambda: {
+                "train_accs": [],
+                "test_accs": [],
+                "optimizer_times": [],
+                "train_losses": [],
+                "test_losses": [],
+            }
+        )
+    )
+
+    for run_info in runs:
+        p_name, o_name = run_info["p_name"], run_info["o_name"]
+        local_data = parse_local_run(run_info["local_dir"], [])
+        if not local_data:
+            print(f"Warning: Could not parse local data for run {run_info['wandb_id']}. Skipping.")
+            continue
+
+        required_metrics = [
+            "final_train_accuracy",
+            "final_test_accuracy",
+            "optimizer_time",
+            "final_train_loss",
+            "final_test_loss",
+        ]
+        if all(key in local_data for key in required_metrics):
+            results_by_config[p_name][o_name]["train_accs"].append(local_data["final_train_accuracy"])
+            results_by_config[p_name][o_name]["test_accs"].append(local_data["final_test_accuracy"])
+            results_by_config[p_name][o_name]["optimizer_times"].append(local_data["optimizer_time"])
+            results_by_config[p_name][o_name]["train_losses"].append(local_data["final_train_loss"])
+            results_by_config[p_name][o_name]["test_losses"].append(local_data["final_test_loss"])
+        else:
+            # Create a more informative warning message
+            missing_keys = [key for key in required_metrics if key not in local_data]
+            print(
+                f"Warning: Missing required metrics {missing_keys} in local files for run {run_info['wandb_id']}. Skipping."
+            )
+
+    all_results = []
+    for p_name, optimizers in results_by_config.items():
+        for o_name, results in optimizers.items():
+            if all(
+                results.get(key)
+                for key in ["train_accs", "test_accs", "optimizer_times", "train_losses", "test_losses"]
+            ):
+                avg_train_acc = sum(results["train_accs"]) / len(results["train_accs"])
+                avg_test_acc = sum(results["test_accs"]) / len(results["test_accs"])
+                avg_time = sum(results["optimizer_times"]) / len(results["optimizer_times"])
+                avg_train_loss = sum(results["train_losses"]) / len(results["train_losses"])
+                avg_test_loss = sum(results["test_losses"]) / len(results["test_losses"])
+
+                all_results.append(
+                    {"Dataset": p_name, "Metric": "Train Acc", "Optimizer": o_name, "Value": avg_train_acc * 100}
+                )
+                all_results.append(
+                    {"Dataset": p_name, "Metric": "Test Acc", "Optimizer": o_name, "Value": avg_test_acc * 100}
+                )
+                all_results.append(
+                    {"Dataset": p_name, "Metric": "Train Loss", "Optimizer": o_name, "Value": avg_train_loss}
+                )
+                all_results.append(
+                    {"Dataset": p_name, "Metric": "Test Loss", "Optimizer": o_name, "Value": avg_test_loss}
+                )
+                all_results.append({"Dataset": p_name, "Metric": "Time", "Optimizer": o_name, "Value": avg_time})
+
+    if not all_results:
+        print("No results to display.")
+        return
+
+    final_table = format_table(pd.DataFrame(all_results))
+    print("\n--- Results Table ---")
+    print(final_table.to_string())
+
+
+def generate_accuracy_table_latex(runs: List[Dict[str, Any]]):
+    """
+    Generates a publication-quality LaTeX table from run data, correctly handling
+    per-group highlighting and special character escaping.
+    """
+    print("\n--- Generating LaTeX table for publication (v2)... ---")
+
+    # --- 1. Data Aggregation (same as your original function) ---
+    # (This section remains the same as your script)
+    results_by_config = defaultdict(
+        lambda: defaultdict(
+            lambda: {"train_accs": [], "test_accs": [], "optimizer_times": [], "train_losses": [], "test_losses": []}
+        )
+    )
+    for run_info in runs:
+        p_name, o_name = run_info["p_name"], run_info["o_name"]
+        local_data = parse_local_run(run_info["local_dir"], [])
+        if not local_data:
+            continue
+        required_metrics = [
+            "final_train_accuracy",
+            "final_test_accuracy",
+            "optimizer_time",
+            "final_train_loss",
+            "final_test_loss",
+        ]
+        if all(key in local_data for key in required_metrics):
+            results_by_config[p_name][o_name]["train_accs"].append(local_data["final_train_accuracy"])
+            results_by_config[p_name][o_name]["test_accs"].append(local_data["final_test_accuracy"])
+            results_by_config[p_name][o_name]["optimizer_times"].append(local_data["optimizer_time"])
+            results_by_config[p_name][o_name]["train_losses"].append(local_data["final_train_loss"])
+            results_by_config[p_name][o_name]["test_losses"].append(local_data["final_test_loss"])
+
+    all_results = []
+    for p_name, optimizers in results_by_config.items():
+        for o_name, results in optimizers.items():
+            if all(results.get(key) for key in results.keys()):
+                all_results.append(
+                    {
+                        "Dataset": p_name,
+                        "Optimizer": o_name,
+                        "Train Acc": sum(results["train_accs"]) / len(results["train_accs"]) * 100,
+                        "Test Acc": sum(results["test_accs"]) / len(results["test_accs"]) * 100,
+                        "Train Loss": sum(results["train_losses"]) / len(results["train_losses"]),
+                        "Test Loss": sum(results["test_losses"]) / len(results["test_losses"]),
+                        "Time": sum(results["optimizer_times"]) / len(results["optimizer_times"]),
+                    }
+                )
+
+    if not all_results:
+        print("No results to generate a table.")
+        return
+
+    df = pd.DataFrame(all_results)
+
+    # --- 2. Data Formatting and Styling ---
+
+    # Rename optimizers first for cleaner, more readable names in the table
+    optimizer_rename = {
+        "Stream_SGD": "SGD",
+        "Stream_SGD_Avg": "SGD-Avg",
+        "Stream_mSNA": "mSNA",
+        "Stream_mSNA_Avg": "mSNA-Avg",
+        "Stream_mSNA_ell-0,25": "mSNA (l=0.25)",
+        "Stream_mSNA_ell-0,5": "mSNA (l=0.5)",
+        "Stream_mSNA_init_hess-10d": "mSNA",
+        "Stream_mSNA_Avg_init_hess-10d": "mSNA-Avg",
+    }
+    df["Optimizer"] = df["Optimizer"].replace(optimizer_rename)
+
+    # **IMPORTANT**: Escape LaTeX special characters AFTER renaming.
+    # This ensures that underscores in original names don't prevent remapping.
+    df["Optimizer"] = df["Optimizer"].str.replace("_", r"\_", regex=False)
+    df["Dataset"] = df["Dataset"].str.replace("_", r"\_", regex=False)
+
+    # Set up the multi-index which is key for grouping and multirow
+    df = df.set_index(["Dataset", "Optimizer"])
+
+    # Create an empty DataFrame to hold style information ('font-weight: bold')
+    style_df = pd.DataFrame("", index=df.index, columns=df.columns)
+
+    metrics_higher_better = ["Train Acc", "Test Acc"]
+
+    # Iterate over each dataset to find and mark the best value
+    for dataset_name in df.index.get_level_values("Dataset").unique():
+        sub_df = df.loc[dataset_name]
+        for col in df.columns:
+            if col in metrics_higher_better:
+                best_optimizer_idx = sub_df[col].idxmax()
+            else:  # Lower is better for Loss and Time
+                best_optimizer_idx = sub_df[col].idxmin()
+
+            # Mark the cell for bolding
+            style_df.loc[(dataset_name, best_optimizer_idx), col] = "font-weight: bold"
+
+    # Use the Styler to apply formatting and styles
+    styler = df.style.apply(lambda s: style_df, axis=None)
+
+    def format_time(seconds):
+        if pd.isna(seconds):
+            return ""
+        return f"{seconds * 1000:.1f} ms" if seconds < 1.0 else f"{seconds:.2f} s"
+
+    styler = styler.format(
+        {
+            "Train Acc": "{:.2f}",
+            "Test Acc": "{:.2f}",
+            "Train Loss": "{:.2e}",
+            "Test Loss": "{:.2e}",
+            "Time": format_time,
+        }
+    )
+
+    # --- 3. Generate LaTeX Code ---
+
+    latex_string = styler.to_latex(
+        column_format="llrrrrr",
+        position="!htbp",
+        caption="Performance of streaming optimizers on various datasets.",
+        label="tab:performance_results",
+        hrules=True,  # Key for booktabs and automatic multirow grouping
+        convert_css=True,  # Key to convert 'font-weight: bold' to \textbf{}
+    )
+
+    print("\n" + "=" * 50)
+    print("COPY AND PASTE THE FOLLOWING LATEX CODE INTO YOUR .tex FILE")
+    print("=" * 50 + "\n")
+    print(latex_string)
+    print("\n" + "=" * 50)
+    print("Remember to include \\usepackage{booktabs} and \\usepackage{multirow} in your preamble.")
+    print("=" * 50 + "\n")
+
+
+def generate_plots(runs: List[Dict[str, Any]], metrics_to_plot: List[str]):
+    print("\n--- Generating plots from local run data... ---")
+    data_for_plots = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    optimizer_times = defaultdict(lambda: defaultdict(list))
+
+    for run_info in runs:
+        p_name, o_name = run_info["p_name"], run_info["o_name"]
+        local_data = parse_local_run(run_info["local_dir"], metrics_to_plot)
+        if not local_data:
+            print(f"Warning: Could not parse local data for run {run_info['wandb_id']}. Skipping.")
+            continue
+
+        local_history = local_data.get("history", {})
+        # Line plots
+        for metric in metrics_to_plot:
+            if metric in local_history and local_history[metric]:
+                metric_df = pd.DataFrame.from_records(local_history[metric])
+                data_for_plots[p_name][metric][o_name].append(metric_df)
+        # Optimizer times for boxplot
+        if "optimizer_time" in local_data:
+            optimizer_times[p_name][o_name].append(local_data["optimizer_time"])
+
+    # --- Generate and Save Plots ---
+    plot_dir = "plots"
+    os.makedirs(plot_dir, exist_ok=True)
+
+    # Metrics that should be plotted on a log scale
+    log_scale_metrics = ["estimation_error", "inv_hess_error_fro"]
+
+    # Line plots
+    for p_name, metrics in data_for_plots.items():
+        for metric, optimizers in metrics.items():
+            plt.figure(figsize=(10, 6))
+            for o_name, dfs in optimizers.items():
+                if dfs:
+                    # Average across seeds
+                    merged_df = pd.concat(dfs).groupby("samples").mean().reset_index()
+                    plt.plot(merged_df["samples"], merged_df[metric], label=o_name)
+            plt.xlabel("Samples")
+            plt.ylabel(metric)
+            plt.title(f"{metric} for {p_name}")
+
+            if metric in log_scale_metrics:
+                plt.yscale("log")
+
+            plt.legend()
+            plt.grid(True, which="both", ls="--")
+            plt.savefig(os.path.join(plot_dir, f"{p_name}_{metric}.png"))
+            plt.close()
+
+    # Box plot for optimizer times
+    for p_name, optimizers in optimizer_times.items():
+        avg_times = {o_name: sum(times) / len(times) for o_name, times in optimizers.items() if times}
+        if avg_times:
+            df = pd.DataFrame(list(avg_times.items()), columns=["Optimizer", "Time"])
+            plt.figure(figsize=(10, 6))
+            plt.bar(df["Optimizer"], df["Time"])
+            plt.ylabel("Average Optimizer Time (s)")
+            plt.title(f"Average Optimizer Time for {p_name}")
+            plt.xticks(rotation=45, ha="right")
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f"{p_name}_optimizer_time.png"))
+            plt.close()
+
+    print(f"Plots saved to '{plot_dir}/' directory.")
+
+
+def run_visualizations(runs_to_fetch: List[Dict[str, Any]], problem_files: List[str], latex: bool = False):
+    """
+    Separates synthetic and real-data runs and generates the appropriate
+    visualizations for each type (plots for synthetic, tables for real).
+    """
+    metrics_to_plot = ["estimation_error", "inv_hess_error_fro"]
+
+    synthetic_runs = []
+    real_runs = []
+
+    # Create a mapping from problem name to whether it's synthetic based on file paths
+    is_synthetic_map = {os.path.basename(p).replace(".yaml", ""): "synthetic" in p for p in problem_files}
+
+    # Separate runs into synthetic and real based on the problem they belong to
+    for run in runs_to_fetch:
+        if is_synthetic_map.get(run["p_name"], False):
+            synthetic_runs.append(run)
+        else:
+            real_runs.append(run)
+
+    # Generate plots for any synthetic runs found
+    if synthetic_runs:
+        print("\n--- Generating plots for synthetic datasets... ---")
+        generate_plots(synthetic_runs, metrics_to_plot)
+
+    # Generate tables for any real-data runs found
+    if real_runs:
+        print("\n--- Generating table for real datasets... ---")
+        if latex:
+            generate_accuracy_table_latex(real_runs)
+        else:
+            generate_accuracy_table(real_runs)
+
+
+# ============================================================================ #
+# >>> Evaluation Utilities <<<
+# ============================================================================ #
+
+
+def evaluate_on_set(
+    eval_set: torch.utils.data.Dataset,
+    model: BaseObjectiveFunction,
+    param: torch.Tensor,
+    device: str,
+    model_name: str,
+    set_name: str,
+    eval_batch_size: int = 512,
+    subset_size: int | None = None,
+) -> dict:
+    """Helper to evaluate loss and accuracy on a given dataset or a subset of it."""
+    if eval_set is None or len(eval_set) == 0:
+        return {}
+
+    sampler = None
+    if subset_size and subset_size < len(eval_set):
+        # Use a random subset of the data for evaluation
+        indices = torch.randperm(len(eval_set))[:subset_size]
+        sampler = torch.utils.data.SubsetRandomSampler(indices)
+        total_samples = subset_size
+    else:
+        total_samples = len(eval_set)
+
+    eval_loader = DataLoader(eval_set, batch_size=eval_batch_size, pin_memory=(device == "cuda"), sampler=sampler)
+    total_loss = 0.0
+    all_predictions = []
+    all_targets = []
+
+    with torch.no_grad():
+        for X_batch_cpu, y_batch_cpu in eval_loader:
+            X_batch, y_batch = X_batch_cpu.to(device), y_batch_cpu.to(device)
+            loss = model((X_batch, y_batch), param)
+            total_loss += loss.item() * X_batch.size(0)
+
+            if model_name.lower() == "logistic_regression":
+                phi_batch = model._add_bias(X_batch)
+                logits = torch.matmul(phi_batch, param)
+                predictions = (torch.sigmoid(logits) > 0.5).float()
+                all_predictions.append(predictions.cpu())
+                all_targets.append(y_batch_cpu.squeeze())
+
+    metrics = {}
+    if total_samples > 0:
+        metrics[f"{set_name}_loss"] = total_loss / total_samples
+        if all_predictions:
+            predictions_tensor = torch.cat(all_predictions)
+            targets_tensor = torch.cat(all_targets)
+            correct_predictions = (predictions_tensor == targets_tensor).sum().item()
+            metrics[f"{set_name}_accuracy"] = correct_predictions / total_samples
+    return metrics
+
+
+# ============================================================================ #
+# >>> Class Getters <<<
+# ============================================================================ #
+
+
+def get_optimizer_class(optimizer_name: str) -> type[BaseOptimizer]:
+    if optimizer_name == "SGD":
+        return SGD
+    elif optimizer_name == "mSNA":
+        return mSNA
+    elif optimizer_name == "SNA":
+        return SNA
+    else:
+        raise ValueError(f"Unknown optimizer specified in config: {optimizer_name}")
+
+
+def get_obj_function_class(model_type: str) -> Any:
+    model_type_lower = model_type.lower()
+    if model_type_lower == "linear_regression":
+        return LinearRegression
+    elif model_type_lower == "logistic_regression":
+        return LogisticRegression
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
+
+
+# ============================================================================ #
+# >>> Learning Rate Finder Utilities <<<
+# ============================================================================ #
+
+
+def find_best_lr(problem_config: Dict, seed: int):
+    """
+    Performs a line search to find an optimal initial learning rate.
+    It tests a range of learning rates on a single large batch of data,
+    computes the loss for one step, and plots the results.
+    """
+    print("--- Starting Learning Rate Finder ---")
+    # Lazy import to avoid circular dependencies at module level
+    from datasets import load_dataset_from_source
+    import numpy as np
+
+    # --- Setup ---
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dataset_name = problem_config.get("dataset")
+    dataset_params = problem_config.get("dataset_params")
+    model_name = problem_config.get("model")
+    model_params = problem_config.get("model_params")
+
+    model = get_obj_function_class(model_name)(**model_params)
+
+    # --- Load Data ---
+    # Load the full training set to select a large batch from it.
+    print(f"Loading dataset '{dataset_name}' to create a search batch...")
+    torch.manual_seed(seed)
+    loaded_data = load_dataset_from_source(dataset_name=dataset_name, random_state=seed, **dataset_params)
+    train_set = loaded_data["train_dataset"]
+    number_features = loaded_data["number_features"]
+
+    if len(train_set) == 0:
+        print("Error: Training set is empty. Cannot run learning rate finder.")
+        return
+
+    # Create a single large batch for the search.
+    search_batch_size = min(5000, len(train_set))
+    data_loader = DataLoader(train_set, batch_size=search_batch_size, shuffle=True)
+    search_data_cpu = next(iter(data_loader))
+    search_data = tuple(item.to(device) for item in search_data_cpu)
+
+    # --- Initialize Parameters ---
+    bias = problem_config.get("model_params", {}).get("bias", False)
+    param_dim = number_features + 1 if bias else number_features
+    theta_init = torch.zeros(param_dim, device=device, dtype=torch.float32)
+
+    # --- LR Search Loop ---
+    # Test 100 learning rates logarithmically spaced from 1e-12 to 1000.
+    lr_candidates = np.logspace(-12, 3, 100)
+    search_steps_options = [10, 100, 1000]
+    all_losses = {steps: [] for steps in search_steps_options}
+
+    print(f"Testing {len(lr_candidates)} learning rates over {search_steps_options} steps...")
+
+    for num_search_steps in search_steps_options:
+        print(f"  Running search for {num_search_steps} steps...")
+        losses_for_this_run = []
+        for lr in lr_candidates:
+            temp_theta = theta_init.clone()
+            try:
+                for _ in range(num_search_steps):
+                    grad = model.grad(search_data, temp_theta)
+                    if not torch.all(torch.isfinite(grad)):
+                        raise RuntimeError("Gradient became NaN or Inf.")
+                    temp_theta.add_(grad, alpha=-lr)
+                loss = model(search_data, temp_theta)
+                if not torch.isfinite(loss):
+                    raise RuntimeError("Loss became NaN or Inf.")
+                losses_for_this_run.append(loss.item())
+            except RuntimeError:
+                losses_for_this_run.append(float("nan"))
+        all_losses[num_search_steps] = losses_for_this_run
+
+    # --- Plotting Results ---
+    plt.figure(figsize=(10, 6))
+    colors = plt.cm.viridis(np.linspace(0, 1, len(search_steps_options)))
+    best_lrs_info = {}
+
+    for i, (num_steps, losses) in enumerate(all_losses.items()):
+        losses_arr = np.array(losses)
+        # Filter out NaNs for plotting to avoid gaps if library doesn't handle it
+        finite_mask = np.isfinite(losses_arr)
+        plt.plot(
+            lr_candidates[finite_mask], losses_arr[finite_mask], label=f"Loss after {num_steps} steps", color=colors[i]
+        )
+
+        # Use nanargmin to find the best LR, ignoring NaNs.
+        try:
+            best_lr_index = np.nanargmin(losses_arr)
+            best_lr = lr_candidates[best_lr_index]
+            min_loss = losses_arr[best_lr_index]
+            best_lrs_info[num_steps] = (best_lr, min_loss)
+
+            plt.axvline(x=best_lr, color=colors[i], linestyle="--", label=f"Best for {num_steps} steps: {best_lr:.2e}")
+        except ValueError:  # This happens if all losses are NaN
+            print(f"Warning: All losses were NaN for {num_steps} steps. Could not find a best LR.")
+
+    # Find the overall minimum loss to set the y-axis scale appropriately
+    all_finite_losses = [loss for losses in all_losses.values() for loss in losses if np.isfinite(loss)]
+    if all_finite_losses:
+        global_min_loss = min(all_finite_losses)
+        # Set a dynamic y-limit to zoom in on the interesting part of the plot
+        # The upper limit is 10x the minimum loss, with a small buffer.
+        # The lower limit is slightly below the minimum loss to provide some space.
+        y_upper_limit = global_min_loss * 10 + 1
+        y_lower_limit = global_min_loss - (abs(global_min_loss) * 0.1 + 0.1)
+        plt.ylim(y_lower_limit, y_upper_limit)
+
+    plt.xscale("log")
+    plt.xlabel("Learning Rate")
+    plt.ylabel("Loss")
+    plt.title(f"Learning Rate Finder for {dataset_name.capitalize()}")
+    plt.grid(True, which="both", ls="--")
+    plt.legend()
+
+    plot_dir = "plots"
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_path = os.path.join(plot_dir, f"lr_finder_{sanitize_for_wandb(dataset_name)}.png")
+    plt.savefig(plot_path)
+
+    print("\n--- Results ---")
+    for num_steps, (best_lr, min_loss) in best_lrs_info.items():
+        print(f"Optimal learning rate after {num_steps} steps: {best_lr:.4e} (Loss: {min_loss:.4f})")
+
+    print(f"Plot saved to: {plot_path}")
+    print("\nInspect the plot to confirm the choice. A good LR is typically the lowest point before the loss explodes.")
+    print(
+        "You can now update your optimizer's .yaml file. For a constant LR, set 'lr_const' to this value, 'lr_exp: 0.0', and 'lr_add: 0.0'."
+    )

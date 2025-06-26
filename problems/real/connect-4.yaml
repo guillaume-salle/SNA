@@ -7,6 +7,8 @@ dataset_params:
 log_test_every_n_batches: 200
 log_train_every_n_batches: 200
 
+optimal_lr: 3.0
+
 model: logistic_regression
 model_params:
   bias: true

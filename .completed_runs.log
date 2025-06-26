@@ -1,86 +1,38 @@
 linear_random_d-1000_N-1e7:
-    Stream_SGD_1b5e6ba4_0,07iwngvm
-    Stream_SNA_14da6bb0_0,c1mhdssu
-    Stream_mSNA_1abfc9c6_0,bdg4i97s
-    Stream_mSNA_ell-0_25_301a0854_0,iks7vylu
-    Stream_mSNA_ell-0_5_fdcde78b_0,ql2sosa4
-    Stream_mSNA_init_hess-10d_c2d2cda2_0,9wan8jml
-    Stream_SGD_1b5e6ba4_0,07iwngvm
-    Stream_SNA_14da6bb0_0,c1mhdssu
-    Stream_mSNA_1abfc9c6_0,bdg4i97s
-    Stream_mSNA_ell-0_25_301a0854_0,iks7vylu
-    Stream_mSNA_ell-0_5_fdcde78b_0,ql2sosa4
-    Stream_mSNA_init_hess-10d_c2d2cda2_0,9wan8jml
-    Stream_SGD_1b5e6ba4_0,07iwngvm
-    Stream_SNA_14da6bb0_0,c1mhdssu
-    Stream_mSNA_1abfc9c6_0,bdg4i97s
-    Stream_mSNA_ell-0_25_301a0854_0,iks7vylu
-    Stream_mSNA_ell-0_5_fdcde78b_0,ql2sosa4
-    Stream_mSNA_init_hess-10d_c2d2cda2_0,9wan8jml
+    Stream_SGD_1b5e6ba4_0,gbsebmq5,/home/gs/SNA/wandb/offline-run-20250626_212249-gbsebmq5/files
+    Stream_SGD_Avg_c0dbb2be_0,7s9f844w,/home/gs/SNA/wandb/offline-run-20250626_212414-7s9f844w/files
+    Stream_mSNA_Avg_init_hess-10d_ed1ce0e5_0,1s832427,/home/gs/SNA/wandb/run-20250626_190147-1s832427/files
+    Stream_mSNA_init_hess-10d_c2d2cda2_0,m2ji5kz5,/home/gs/SNA/wandb/run-20250626_190945-m2ji5kz5/files
 logistic_random_d-1000_N-1e7:
-    Stream_SGD_3a2c2575_0,9l8y8ghx
-    Stream_SNA_f06fe8f2_0,3wl2r9mi
-    Stream_mSNA_cfaaf173_0,zfe8czch
-    Stream_mSNA_ell-0_25_a95f853a_0,hs9kqloo
-    Stream_mSNA_ell-0_5_6e6a6887_0,ijq75sks
-    Stream_mSNA_init_hess-10d_adf9cbe3_0,rho138v3
-    Stream_SGD_3a2c2575_0,9l8y8ghx
-    Stream_SNA_f06fe8f2_0,3wl2r9mi
-    Stream_mSNA_cfaaf173_0,zfe8czch
-    Stream_mSNA_ell-0_25_a95f853a_0,hs9kqloo
-    Stream_mSNA_ell-0_5_6e6a6887_0,ijq75sks
-    Stream_mSNA_init_hess-10d_adf9cbe3_0,rho138v3
-    Stream_SGD_3a2c2575_0,9l8y8ghx
-    Stream_SNA_f06fe8f2_0,3wl2r9mi
-    Stream_mSNA_cfaaf173_0,zfe8czch
-    Stream_mSNA_ell-0_25_a95f853a_0,hs9kqloo
-    Stream_mSNA_ell-0_5_6e6a6887_0,ijq75sks
-    Stream_mSNA_init_hess-10d_adf9cbe3_0,rho138v3
-adult_test:
-    Stream_SGD_985b41da_0,e8rcxoeh
-    Stream_mSNA_302ef731_0,tlrn8x2h
-phishing_test:
-    Stream_SGD_c4da66e4_0,m7hzten0
-    Stream_mSNA_2bfdc5a3_0,r7wa2ae5
+    Stream_SGD_3a2c2575_0,sidtwagy,/home/gs/SNA/wandb/offline-run-20250626_212534-sidtwagy/files
+    Stream_SGD_Avg_0cd03b7f_0,jv11hdiy,/home/gs/SNA/wandb/offline-run-20250626_212714-jv11hdiy/files
 adult:
-    Stream_SGD_4c2293cd_0,txw7bo63
-    Stream_SNA_4c462253_0,72llg9wm
-    Stream_mSNA_6042256e_0,pwtnuuln
-    Stream_mSNA_ell-0_25_0fc4e00a_0,zvrj1diz
-    Stream_mSNA_ell-0_5_dc529132_0,670hopoo
-    Stream_mSNA_init_hess-10d_981433a4_0,dstosqut
+    Stream_SGD_f0de8727_0,8fkat1z6,/home/gs/SNA/wandb/offline-run-20250626_213217-8fkat1z6/files
+    Stream_SGD_Avg_d32484f2_0,bf3pusdw,/home/gs/SNA/wandb/offline-run-20250626_213219-bf3pusdw/files
+    Stream_mSNA_Avg_init_hess-10d_86960955_0,52r09urg,/home/gs/SNA/wandb/offline-run-20250626_213222-52r09urg/files
+    Stream_mSNA_init_hess-10d_d31f0e5e_0,2opgvf1l,/home/gs/SNA/wandb/offline-run-20250626_213224-2opgvf1l/files
 connect-4:
-    Stream_SGD_3ec2f195_0,1ei1ejkh
-    Stream_SNA_b23433a3_0,16p27lxg
-    Stream_mSNA_9f6cdbc4_0,g1uo6utv
-    Stream_mSNA_ell-0_25_5ab2b657_0,nlo54nvn
-    Stream_mSNA_ell-0_5_0f974be4_0,nk9hhlye
-    Stream_mSNA_init_hess-10d_f929fbd5_0,llu1ld2g
+    Stream_SGD_d170a825_0,qz5anq3p,/home/gs/SNA/wandb/offline-run-20250626_213226-qz5anq3p/files
+    Stream_SGD_Avg_a1d1fd81_0,egwidske,/home/gs/SNA/wandb/offline-run-20250626_213227-egwidske/files
+    Stream_mSNA_Avg_init_hess-10d_d1ca553d_0,rzb7sfug,/home/gs/SNA/wandb/offline-run-20250626_213228-rzb7sfug/files
+    Stream_mSNA_init_hess-10d_d887237c_0,d3dm5k83,/home/gs/SNA/wandb/offline-run-20250626_213229-d3dm5k83/files
 covtype_sklearn:
-    Stream_SGD_99eae543_0,lkb1ypzp
-    Stream_SNA_bd03ff83_0,rat09r82
-    Stream_mSNA_33233d89_0,ipv0ddtf
-    Stream_mSNA_ell-0_25_9fc37aa7_0,78v1nj8x
-    Stream_mSNA_ell-0_5_499a85bf_0,ymfocbs3
-    Stream_mSNA_init_hess-10d_3763c4db_0,7jjiu4v5
+    Stream_SGD_4364645c_0,aevs9676,/home/gs/SNA/wandb/offline-run-20250626_213229-aevs9676/files
+    Stream_SGD_Avg_26720782_0,clh5zpr1,/home/gs/SNA/wandb/offline-run-20250626_213303-clh5zpr1/files
+    Stream_mSNA_Avg_init_hess-10d_05ef7497_0,k6hyzddr,/home/gs/SNA/wandb/offline-run-20250626_213336-k6hyzddr/files
+    Stream_mSNA_init_hess-10d_32184536_0,1uw5fqqx,/home/gs/SNA/wandb/offline-run-20250626_213411-1uw5fqqx/files
 mnist:
-    Stream_SGD_bdc16367_0,vq7i6sig
-    Stream_SNA_5450c1d0_0,2kw9aled
-    Stream_mSNA_8971e753_0,nh1z0cgx
-    Stream_mSNA_ell-0_25_29106673_0,j83zg4f2
-    Stream_mSNA_ell-0_5_b5dabe3a_0,cw9gfb5n
-    Stream_mSNA_init_hess-10d_b2f3bfdf_0,tx5xou0w
+    Stream_SGD_2c4b8a19_0,sjel1lvt,/home/gs/SNA/wandb/offline-run-20250626_213445-sjel1lvt/files
+    Stream_SGD_Avg_796e4a92_0,0fcoctxv,/home/gs/SNA/wandb/offline-run-20250626_213446-0fcoctxv/files
+    Stream_mSNA_Avg_init_hess-10d_cb710d09_0,vv6mltso,/home/gs/SNA/wandb/offline-run-20250626_213447-vv6mltso/files
+    Stream_mSNA_init_hess-10d_a04c20de_0,h3m1q7pz,/home/gs/SNA/wandb/offline-run-20250626_213448-h3m1q7pz/files
 mushrooms:
-    Stream_SGD_77c07c18_0,97dqiteu
-    Stream_SNA_321c59f2_0,ik0ivgp6
-    Stream_mSNA_f075f406_0,xefvv6ut
-    Stream_mSNA_ell-0_25_292317c1_0,pidc8483
-    Stream_mSNA_ell-0_5_4a5f3e93_0,x3mja4sd
-    Stream_mSNA_init_hess-10d_9c814429_0,l8ey38nx
+    Stream_SGD_37ef6d64_0,prt35h7g,/home/gs/SNA/wandb/offline-run-20250626_213449-prt35h7g/files
+    Stream_SGD_Avg_083289c6_0,tjng7bp1,/home/gs/SNA/wandb/offline-run-20250626_213449-tjng7bp1/files
+    Stream_mSNA_Avg_init_hess-10d_9d92957e_0,a06hvjuj,/home/gs/SNA/wandb/offline-run-20250626_213449-a06hvjuj/files
+    Stream_mSNA_init_hess-10d_dbc1b002_0,psjcu68q,/home/gs/SNA/wandb/offline-run-20250626_213449-psjcu68q/files
 phishing:
-    Stream_SGD_fb239195_0,0l2t6myt
-    Stream_SNA_7b26e588_0,29xhryvl
-    Stream_mSNA_f819928c_0,16elilbr
-    Stream_mSNA_ell-0_25_c2fa4f47_0,ne9fkii4
-    Stream_mSNA_ell-0_5_7f0b2e37_0,1wj2gvbu
-    Stream_mSNA_init_hess-10d_8e340295_0,nmullivr
+    Stream_SGD_9e6de265_0,9drkl4by,/home/gs/SNA/wandb/offline-run-20250626_213450-9drkl4by/files
+    Stream_SGD_Avg_a5293891_0,34a1gr4g,/home/gs/SNA/wandb/offline-run-20250626_213450-34a1gr4g/files
+    Stream_mSNA_Avg_init_hess-10d_01ab8610_0,oktxuhur,/home/gs/SNA/wandb/offline-run-20250626_213450-oktxuhur/files
+    Stream_mSNA_init_hess-10d_2bd59ec1_0,96l2ax8o,/home/gs/SNA/wandb/offline-run-20250626_213451-96l2ax8o/files
