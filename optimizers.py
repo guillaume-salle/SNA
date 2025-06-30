@@ -53,6 +53,7 @@ class BaseOptimizer(ABC):
         self.device = device
         param = param.to(self.device)
         self.param = param
+        self.dim = param.shape[0]
         self.obj_function = obj_function
         self.lr_exp = lr_exp
         self.lr_const = lr_const
@@ -92,9 +93,11 @@ class BaseOptimizer(ABC):
             gd_lr (float): The learning rate for the gradient descent.
         """
         gd_steps = initialization_params.get("gd_steps", 100)
-        batch_size_fraction = initialization_params.get("batch_size_fraction", 0.1)
 
-        init_batch_size = min(int(len(train_set) * batch_size_fraction), 5000)
+        # Calculate batch size as min(max(2*d, 1% of train set), 5000)
+        one_percent_of_train = int(len(train_set) * 0.01)
+        init_batch_size = min(max(2 * self.dim, one_percent_of_train), 5000)
+
         if init_batch_size == 0:
             print("   [Initializer] Warning: Initial batch size is 0. Skipping initialization.")
             return
@@ -106,6 +109,11 @@ class BaseOptimizer(ABC):
         data_loader = DataLoader(train_set, batch_size=init_batch_size, shuffle=True)
         initial_data_cpu = next(iter(data_loader))
         initial_data = tuple(item.to(self.device) for item in initial_data_cpu)
+
+        # If the optimizer has a hessian to initialize, do it now with the same data.
+        if isinstance(self, (mSNA, SNA)):
+            hessian_init_params = initialization_params.get("hessian", {})
+            self.initialize_hessian(initial_data, **hessian_init_params)
 
         # Use param_not_avg for the GD updates, which will also update self.param if not averaged
         temp_param = self.param_not_avg.clone().detach().requires_grad_(False)
@@ -267,8 +275,6 @@ class mSNA(BaseOptimizer):
         self.proj = proj
         self.version = version
 
-        self.dim = self.param.shape[0]
-
         self.is_warming_up = init_hess_inv
         if self.is_warming_up:
             if init_hess_inv_samples is None:
@@ -396,7 +402,7 @@ class mSNA(BaseOptimizer):
             initial_data: The data to compute the Hessian on.
             reg (float): Regularization parameter for the Hessian inversion.
         """
-        print("   [mSNA] Initializing matrix with inverse Hessian estimate...")
+        print("   [mSNA] Initializing matrix with inverse Hessian estimate via direct computation...")
         try:
             # Compute Hessian at the current parameter (theta_init)
             avg_hessian = self.obj_function.hessian(initial_data, self.param)
@@ -425,6 +431,16 @@ class mSNA(BaseOptimizer):
             self.matrix.copy_(torch.eye(self.dim, device=self.device, dtype=self.param.dtype))
             if self.averaged_matrix:
                 self.matrix_avg.copy_(self.matrix)
+
+        # Disable the streaming warm-up phase since we have initialized the matrix directly.
+        if self.is_warming_up:
+            print("   [mSNA] Direct Hessian initialization complete, disabling streaming warm-up.")
+            self.is_warming_up = False
+            # Clean up attributes to free memory
+            if hasattr(self, "warmup_data_batches"):
+                del self.warmup_data_batches
+            if hasattr(self, "warmup_samples_processed"):
+                del self.warmup_samples_processed
 
     def step(
         self,
@@ -775,7 +791,6 @@ class SNA(BaseOptimizer):
         self.compute_hessian_param_avg = compute_hessian_param_avg
         self.log_weight_matrix = log_weight_matrix
 
-        self.dim = self.param.shape[0]
         self.hessian_bar = torch.eye(self.dim, device=self.device, dtype=self.param.dtype)
         self.sum_weights_hessian = self.init_id_weight
         self.matrix = torch.eye(self.dim, device=self.device, dtype=self.param.dtype)

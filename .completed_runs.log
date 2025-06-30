@@ -3,36 +3,54 @@ linear_random_d-1000_N-1e7:
     Stream_SGD_Avg_c0dbb2be_0,7s9f844w,/home/gs/SNA/wandb/offline-run-20250626_212414-7s9f844w/files
     Stream_mSNA_Avg_init_hess-10d_ed1ce0e5_0,1s832427,/home/gs/SNA/wandb/run-20250626_190147-1s832427/files
     Stream_mSNA_init_hess-10d_c2d2cda2_0,m2ji5kz5,/home/gs/SNA/wandb/run-20250626_190945-m2ji5kz5/files
+    Stream_mSNA_1abfc9c6_0,8z6dfmjj,/home/gs/SNA/wandb/run-20250627_062925-8z6dfmjj/files
+    Stream_mSNA_Avg_b695be87_0,ggtz9t9u,/home/gs/SNA/wandb/run-20250627_063714-ggtz9t9u/files
 logistic_random_d-1000_N-1e7:
     Stream_SGD_3a2c2575_0,sidtwagy,/home/gs/SNA/wandb/offline-run-20250626_212534-sidtwagy/files
     Stream_SGD_Avg_0cd03b7f_0,jv11hdiy,/home/gs/SNA/wandb/offline-run-20250626_212714-jv11hdiy/files
+    Stream_mSNA_cfaaf173_0,igcd69dm,/home/gs/SNA/wandb/run-20250627_064505-igcd69dm/files
+    Stream_mSNA_Avg_3cf329a0_0,dgni9lyh,/home/gs/SNA/wandb/run-20250627_065319-dgni9lyh/files
 adult:
-    Stream_SGD_f0de8727_0,8fkat1z6,/home/gs/SNA/wandb/offline-run-20250626_213217-8fkat1z6/files
-    Stream_SGD_Avg_d32484f2_0,bf3pusdw,/home/gs/SNA/wandb/offline-run-20250626_213219-bf3pusdw/files
-    Stream_mSNA_Avg_init_hess-10d_86960955_0,52r09urg,/home/gs/SNA/wandb/offline-run-20250626_213222-52r09urg/files
-    Stream_mSNA_init_hess-10d_d31f0e5e_0,2opgvf1l,/home/gs/SNA/wandb/offline-run-20250626_213224-2opgvf1l/files
+    Stream_SGD_f0de8727_0,gh1xihzj,/home/gs/SNA/wandb/run-20250627_120256-gh1xihzj/files
+    Stream_SGD_Avg_d32484f2_0,ls5o0n09,/home/gs/SNA/wandb/run-20250627_120313-ls5o0n09/files
+    Stream_mSNA_Avg_init_hess-10d_86960955_0,41apkewm,/home/gs/SNA/wandb/run-20250627_120329-41apkewm/files
+    Stream_mSNA_init_hess-10d_d31f0e5e_0,4qsigi3p,/home/gs/SNA/wandb/run-20250627_120346-4qsigi3p/files
 connect-4:
-    Stream_SGD_d170a825_0,qz5anq3p,/home/gs/SNA/wandb/offline-run-20250626_213226-qz5anq3p/files
-    Stream_SGD_Avg_a1d1fd81_0,egwidske,/home/gs/SNA/wandb/offline-run-20250626_213227-egwidske/files
-    Stream_mSNA_Avg_init_hess-10d_d1ca553d_0,rzb7sfug,/home/gs/SNA/wandb/offline-run-20250626_213228-rzb7sfug/files
-    Stream_mSNA_init_hess-10d_d887237c_0,d3dm5k83,/home/gs/SNA/wandb/offline-run-20250626_213229-d3dm5k83/files
+    Stream_SGD_d170a825_0,rzawo9pc,/home/gs/SNA/wandb/run-20250627_120402-rzawo9pc/files
+    Stream_SGD_Avg_a1d1fd81_0,jf9r2iie,/home/gs/SNA/wandb/run-20250627_120419-jf9r2iie/files
+    Stream_mSNA_Avg_init_hess-10d_d1ca553d_0,i5vxhwqw,/home/gs/SNA/wandb/run-20250627_120435-i5vxhwqw/files
+    Stream_mSNA_init_hess-10d_d887237c_0,ozhmlcm8,/home/gs/SNA/wandb/run-20250627_120452-ozhmlcm8/files
 covtype_sklearn:
-    Stream_SGD_4364645c_0,aevs9676,/home/gs/SNA/wandb/offline-run-20250626_213229-aevs9676/files
-    Stream_SGD_Avg_26720782_0,clh5zpr1,/home/gs/SNA/wandb/offline-run-20250626_213303-clh5zpr1/files
-    Stream_mSNA_Avg_init_hess-10d_05ef7497_0,k6hyzddr,/home/gs/SNA/wandb/offline-run-20250626_213336-k6hyzddr/files
-    Stream_mSNA_init_hess-10d_32184536_0,1uw5fqqx,/home/gs/SNA/wandb/offline-run-20250626_213411-1uw5fqqx/files
+    Stream_SGD_4364645c_0,b7a79xc0,/home/gs/SNA/wandb/run-20250627_120508-b7a79xc0/files
+    Stream_SGD_Avg_26720782_0,ufq5eg7a,/home/gs/SNA/wandb/run-20250627_120557-ufq5eg7a/files
+    Stream_mSNA_Avg_init_hess-10d_05ef7497_0,g8285k6i,/home/gs/SNA/wandb/run-20250627_120644-g8285k6i/files
+    Stream_mSNA_init_hess-10d_32184536_0,ohbj1am1,/home/gs/SNA/wandb/run-20250627_120737-ohbj1am1/files
+    Stream_SGD_2fa2e7fb_0,fkcq0hpy,/home/gs/SNA/wandb/run-20250627_131746-fkcq0hpy/files
+    Stream_SGD_Avg_d434c120_0,xldhlysv,/home/gs/SNA/wandb/run-20250627_131832-xldhlysv/files
+    Stream_mSNA_Avg_init_hess-10d_1e115244_0,xw09y5tt,/home/gs/SNA/wandb/run-20250627_131917-xw09y5tt/files
+    Stream_mSNA_init_hess-10d_f2f85916_0,rnuhh6kl,/home/gs/SNA/wandb/run-20250627_132006-rnuhh6kl/files
 mnist:
-    Stream_SGD_2c4b8a19_0,sjel1lvt,/home/gs/SNA/wandb/offline-run-20250626_213445-sjel1lvt/files
-    Stream_SGD_Avg_796e4a92_0,0fcoctxv,/home/gs/SNA/wandb/offline-run-20250626_213446-0fcoctxv/files
-    Stream_mSNA_Avg_init_hess-10d_cb710d09_0,vv6mltso,/home/gs/SNA/wandb/offline-run-20250626_213447-vv6mltso/files
-    Stream_mSNA_init_hess-10d_a04c20de_0,h3m1q7pz,/home/gs/SNA/wandb/offline-run-20250626_213448-h3m1q7pz/files
+    Stream_SGD_2c4b8a19_0,2cwjci42,/home/gs/SNA/wandb/run-20250627_120832-2cwjci42/files
+    Stream_SGD_Avg_796e4a92_0,z3zu2k19,/home/gs/SNA/wandb/run-20250627_120848-z3zu2k19/files
+    Stream_mSNA_Avg_init_hess-10d_cb710d09_0,1tfc7jbe,/home/gs/SNA/wandb/run-20250627_120905-1tfc7jbe/files
+    Stream_mSNA_init_hess-10d_a04c20de_0,mbsunl4d,/home/gs/SNA/wandb/run-20250627_120922-mbsunl4d/files
 mushrooms:
-    Stream_SGD_37ef6d64_0,prt35h7g,/home/gs/SNA/wandb/offline-run-20250626_213449-prt35h7g/files
-    Stream_SGD_Avg_083289c6_0,tjng7bp1,/home/gs/SNA/wandb/offline-run-20250626_213449-tjng7bp1/files
-    Stream_mSNA_Avg_init_hess-10d_9d92957e_0,a06hvjuj,/home/gs/SNA/wandb/offline-run-20250626_213449-a06hvjuj/files
-    Stream_mSNA_init_hess-10d_dbc1b002_0,psjcu68q,/home/gs/SNA/wandb/offline-run-20250626_213449-psjcu68q/files
+    Stream_SGD_37ef6d64_0,ph6eqxwj,/home/gs/SNA/wandb/run-20250627_120938-ph6eqxwj/files
+    Stream_SGD_Avg_083289c6_0,gypc40ty,/home/gs/SNA/wandb/run-20250627_120955-gypc40ty/files
+    Stream_mSNA_Avg_init_hess-10d_9d92957e_0,m026f5v6,/home/gs/SNA/wandb/run-20250627_121011-m026f5v6/files
+    Stream_mSNA_init_hess-10d_dbc1b002_0,t37ywcqz,/home/gs/SNA/wandb/run-20250627_121027-t37ywcqz/files
 phishing:
-    Stream_SGD_9e6de265_0,9drkl4by,/home/gs/SNA/wandb/offline-run-20250626_213450-9drkl4by/files
-    Stream_SGD_Avg_a5293891_0,34a1gr4g,/home/gs/SNA/wandb/offline-run-20250626_213450-34a1gr4g/files
-    Stream_mSNA_Avg_init_hess-10d_01ab8610_0,oktxuhur,/home/gs/SNA/wandb/offline-run-20250626_213450-oktxuhur/files
-    Stream_mSNA_init_hess-10d_2bd59ec1_0,96l2ax8o,/home/gs/SNA/wandb/offline-run-20250626_213451-96l2ax8o/files
+    Stream_SGD_9e6de265_0,itz8ef71,/home/gs/SNA/wandb/run-20250627_121044-itz8ef71/files
+    Stream_SGD_Avg_a5293891_0,jwr88btz,/home/gs/SNA/wandb/run-20250627_121100-jwr88btz/files
+    Stream_mSNA_Avg_init_hess-10d_01ab8610_0,agv7xkbz,/home/gs/SNA/wandb/run-20250627_121117-agv7xkbz/files
+    Stream_mSNA_init_hess-10d_2bd59ec1_0,ojsb2nyt,/home/gs/SNA/wandb/run-20250627_121133-ojsb2nyt/files
+linear_random_d-1000_N-1e5:
+    Stream_SGD_fd8cf96f_0,2mx5rric,/home/gs/SNA/wandb/offline-run-20250626_231429-2mx5rric/files
+    Stream_SGD_Avg_b262c3c8_0,jp766stf,/home/gs/SNA/wandb/offline-run-20250626_231430-jp766stf/files
+    Stream_mSNA_794b39ca_0,evigb4fs,/home/gs/SNA/wandb/run-20250627_095336-evigb4fs/files
+    Stream_mSNA_Avg_6c7b2870_0,dn9txcz5,/home/gs/SNA/wandb/run-20250627_095346-dn9txcz5/files
+logistic_random_d-1000_N-1e5:
+    Stream_SGD_c8ce5632_0,j47cw9mv,/home/gs/SNA/wandb/offline-run-20250626_231432-j47cw9mv/files
+    Stream_SGD_Avg_290320bc_0,aebikc0e,/home/gs/SNA/wandb/offline-run-20250626_231447-aebikc0e/files
+    Stream_mSNA_a69c0d6e_0,k7oaye45,/home/gs/SNA/wandb/run-20250627_095355-k7oaye45/files
+    Stream_mSNA_Avg_699b7f1d_0,7alc1kmd,/home/gs/SNA/wandb/run-20250627_095425-7alc1kmd/files

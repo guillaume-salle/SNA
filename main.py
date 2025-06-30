@@ -203,7 +203,7 @@ def main():
                     )
                     actual_wandb_id = wandb_run.id
                     local_dir = wandb_run.dir
-                    run_experiment(p_config, o_config, seed=i, project_name=p_name)
+                    run_experiment(p_config, o_config, seed=i)
 
                     success = True
                     completion_manager.log_run_completion(unique_run_id, actual_wandb_id, local_dir, p_name)
@@ -225,6 +225,9 @@ def main():
                     raise
                 finally:
                     if wandb_run is not None:
+                        # Force a save of the run's data before finishing.
+                        # This can help ensure data is written, especially in offline mode.
+                        wandb_run.save()
                         exit_code = 0 if success else 1
                         wandb.finish(exit_code=exit_code)
                         print(f"--- WandB run finished for {o_name} (Exit code: {exit_code}) ---")
@@ -247,7 +250,7 @@ def main():
     # If we get here, all specified experiments are now complete.
     if args.visualize:
         print("\n--- All experiments are completed. Proceeding with visualization... ---")
-        run_visualizations(runs_to_fetch, problem_files, latex=args.latex)
+        run_visualizations(runs_to_fetch, problem_files, latex=args.latex, entity=WANDB_ENTITY)
     elif args.check_runs:
         print("\n--- All experiments are completed. ---")
     else:

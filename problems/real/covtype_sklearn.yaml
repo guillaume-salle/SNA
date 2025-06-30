@@ -8,9 +8,9 @@ dataset_params:
 log_test_every_n_batches: 200
 log_train_every_n_batches: 200
 
-optimal_lr: "expr: float(3e-7)"
+optimal_lr: "expr: float(1e-7)"
 
 model: logistic_regression
 model_params:
   bias: true
-  lambda_: 1e-4 
+  lambda_: 1e-5

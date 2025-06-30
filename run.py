@@ -2,18 +2,16 @@ import time
 import wandb
 import math
 from tqdm import tqdm
-from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
-from objective_functions import LinearRegression, LogisticRegression, BaseObjectiveFunction
-from optimizers import SGD, mSNA, SNA, BaseOptimizer
+from optimizers import BaseOptimizer
 from datasets import generate_regression, load_dataset_from_source
 from utils import evaluate_on_set, get_obj_function_class, get_optimizer_class
 
 
-def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, project_name: str) -> None:
+def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> None:
     """
     Runs the core optimization loop for a single experiment seed.
     Assumes wandb is already initialized.
@@ -22,7 +20,6 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int, proj
         problem_config (dict): The configuration dictionary for the problem.
         optimizer_config (dict): The configuration dictionary for the optimizer.
         seed (int): The seed for the experiment.
-        project_name (str): The name of the project for logging completion.
     """
 
     # --- Extract Parameters ---

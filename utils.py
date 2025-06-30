@@ -8,14 +8,17 @@ from collections import defaultdict
 import json
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import torch
 from torch.utils.data import DataLoader
+import subprocess
 from objective_functions import (
     BaseObjectiveFunction,
     LinearRegression,
     LogisticRegression,
 )
 from optimizers import SGD, mSNA, SNA, BaseOptimizer
+import wandb
 
 
 def expand_file_patterns(patterns: List[str]) -> List[str]:
@@ -424,8 +427,14 @@ def parse_local_run(local_dir: str, metrics_to_plot: List[str]) -> Dict | None:
         print(f"Warning: local directory not found or invalid: {local_dir}")
         return None
 
-    summary_file = os.path.join(local_dir, "wandb-summary.json")
-    history_file = os.path.join(local_dir, "wandb-history.jsonl")
+    # Accommodate paths that may or may not include the 'files' subdirectory.
+    if os.path.basename(local_dir) == "files":
+        files_dir = local_dir
+    else:
+        files_dir = os.path.join(local_dir, "files")
+
+    summary_file = os.path.join(files_dir, "wandb-summary.json")
+    history_file = os.path.join(files_dir, "wandb-history.jsonl")
 
     # 1. Parse the history file (.jsonl) to get time-series data and the last entry.
     metric_history = {metric: [] for metric in metrics_to_plot}
@@ -447,7 +456,7 @@ def parse_local_run(local_dir: str, metrics_to_plot: List[str]) -> Dict | None:
                                 {"samples": history_item["samples"], metric: history_item[metric]}
                             )
     except (FileNotFoundError, IOError):
-        print(f"Warning: History file not found in {local_dir}. Only final metrics will be available.")
+        print(f"Warning: History file not found in {files_dir}. Only final metrics will be available.")
 
     # 2. Get final metric values. The summary file is the primary source.
     final_metrics = {}
@@ -458,7 +467,7 @@ def parse_local_run(local_dir: str, metrics_to_plot: List[str]) -> Dict | None:
         # If the summary file is missing or corrupt, use the last history line as a fallback.
         final_metrics = last_history_item
         if final_metrics:
-            print(f"Warning: Summary file not found in {local_dir}. Using last history line for final metrics.")
+            print(f"Warning: Summary file not found in {files_dir}. Using last history line for final metrics.")
 
     # 3. Assemble the final run_data dictionary.
     # Start with the final metrics.
@@ -724,6 +733,35 @@ def generate_accuracy_table_latex(runs: List[Dict[str, Any]]):
         convert_css=True,  # Key to convert 'font-weight: bold' to \textbf{}
     )
 
+    # Manually insert \midrule between dataset groups for better readability
+    lines = latex_string.splitlines()
+    new_lines = []
+    # Find the index of the header's bottom rule
+    try:
+        midrule_index = [i for i, s in enumerate(lines) if r"\midrule" in s][0]
+    except IndexError:
+        midrule_index = -1
+
+    if midrule_index != -1:
+        # Add lines up to and including the header's rule
+        new_lines.extend(lines[: midrule_index + 1])
+        first_multirow_found = False
+        # Process the data rows
+        for line in lines[midrule_index + 1 :]:
+            # A new dataset block is starting if the line contains \multirow
+            if r"\multirow" in line:
+                # Add a \midrule before each new block, except the very first one
+                if first_multirow_found:
+                    new_lines.append(r"\midrule")
+                else:
+                    first_multirow_found = True
+            # Stop when we hit the final rule of the table
+            if r"\bottomrule" in line:
+                new_lines.append(line)
+                break
+            new_lines.append(line)
+        latex_string = "\n".join(new_lines)
+
     print("\n" + "=" * 50)
     print("COPY AND PASTE THE FOLLOWING LATEX CODE INTO YOUR .tex FILE")
     print("=" * 50 + "\n")
@@ -733,74 +771,309 @@ def generate_accuracy_table_latex(runs: List[Dict[str, Any]]):
     print("=" * 50 + "\n")
 
 
-def generate_plots(runs: List[Dict[str, Any]], metrics_to_plot: List[str]):
-    print("\n--- Generating plots from local run data... ---")
-    data_for_plots = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-    optimizer_times = defaultdict(lambda: defaultdict(list))
+def generate_combined_synthetic_plot(runs: List[Dict[str, Any]], entity: str, color_map: Dict[str, Any] | None = None):
+    """
+    Generates a single figure with three subplots for synthetic data:
+    1. Estimation Error (line)
+    2. Inverse Hessian Error (line)
+    3. Optimizer Time (bar)
+    Includes a common legend at the bottom.
+    """
+    if not entity:
+        print("!!! ERROR: W&B entity not provided. Cannot fetch data from API. !!!")
+        return
 
+    print("\n--- Generating combined plot for synthetic datasets... ---")
+
+    # Group runs by project name (p_name)
+    runs_by_project = defaultdict(list)
     for run_info in runs:
-        p_name, o_name = run_info["p_name"], run_info["o_name"]
-        local_data = parse_local_run(run_info["local_dir"], metrics_to_plot)
-        if not local_data:
-            print(f"Warning: Could not parse local data for run {run_info['wandb_id']}. Skipping.")
+        runs_by_project[run_info["p_name"]].append(run_info)
+
+    api = wandb.Api()
+
+    for p_name, project_runs in runs_by_project.items():
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))  # 3 plots in a row
+
+        # Group runs by optimizer for easier iteration
+        runs_by_optimizer = defaultdict(list)
+        for run_info in project_runs:
+            runs_by_optimizer[run_info["o_name"]].append(run_info)
+        sorted_optimizer_names = sorted(runs_by_optimizer.keys())
+
+        # --- PLOTS 1 & 2: Line plots for errors ---
+        metrics_to_plot = ["estimation_error", "inv_hess_error_fro"]
+        for i, metric in enumerate(metrics_to_plot):
+            ax = axes[i]
+            for o_name in sorted_optimizer_names:
+                run_list = runs_by_optimizer[o_name]
+                all_histories = []
+                for run_info in run_list:
+                    try:
+                        run_path = f"{entity}/{p_name}/{run_info['wandb_id']}"
+                        run = api.run(run_path)
+                        scanned_data = run.scan_history(keys=["samples", metric])
+                        history = pd.DataFrame(list(scanned_data))
+                        if not history.empty and metric in history.columns and not history[metric].dropna().empty:
+                            all_histories.append(history.set_index("samples")[[metric]].dropna())
+                    except Exception as e:
+                        print(f"    -> WARNING: Could not fetch run {run_info['wandb_id']}. Error: {e}")
+
+                if all_histories:
+                    combined_history = pd.concat(all_histories)
+                    mean_history = combined_history.groupby(combined_history.index).mean()
+                    plot_color = color_map.get(o_name) if color_map else None
+                    ax.plot(mean_history.index, mean_history[metric], label=o_name, color=plot_color)
+
+            metric_name_map = {
+                "estimation_error": r"$\|\theta_n - \theta^*\|^2$",
+                "inv_hess_error_fro": r"$\|A_n^{-1} - (H^*)^{-1}\|_F^2$",
+            }
+            ax.set_ylabel(metric_name_map.get(metric, metric), rotation="vertical")
+            ax.set_xlabel("Samples")
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.yaxis.set_major_formatter(mticker.ScalarFormatter())
+            ax.yaxis.set_minor_formatter(mticker.NullFormatter())
+
+        # --- PLOT 3: Optimizer Time ---
+        ax = axes[2]
+        optimizer_times = defaultdict(list)
+        for o_name, run_list in runs_by_optimizer.items():
+            for run_info in run_list:
+                try:
+                    run_path = f"{entity}/{p_name}/{run_info['wandb_id']}"
+                    run = api.run(run_path)
+                    if "optimizer_time" in run.summary:
+                        optimizer_times[o_name].append(run.summary["optimizer_time"])
+                except Exception as e:
+                    print(f"    -> WARNING: Could not fetch run summary for {run_info['wandb_id']}. Error: {e}")
+
+        if optimizer_times:
+            avg_times = {o_name: sum(times) / len(times) for o_name, times in optimizer_times.items()}
+            sorted_times = [avg_times[o_name] for o_name in sorted_optimizer_names]
+            bar_colors = [color_map.get(o_name) for o_name in sorted_optimizer_names] if color_map else None
+            ax.bar(sorted_optimizer_names, sorted_times, color=bar_colors, width=0.4)
+            ax.set_xlabel("Optimizer")
+            ax.set_ylabel("Optimizer Time (s)")
+            ax.set_title("Optimizer Time")
+            ax.tick_params(axis="x", rotation=45)
+
+        # --- COMMON LEGEND & TITLE ---
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, -0.1), ncol=len(sorted_optimizer_names))
+
+        try:
+            name_parts = p_name.split("_")
+            model_type = name_parts[0].capitalize()
+            d_val = [p for p in name_parts if p.startswith("d-")][0].split("-")[1]
+            n_val_str = [p for p in name_parts if p.startswith("N-")][0].split("-")[1]
+            if "e" in n_val_str:
+                base, exp = n_val_str.split("e")
+                n_val_formatted = f"{base} \\times 10^{{{exp}}}"
+            else:
+                n_val_formatted = n_val_str
+            title = f"{model_type} ($d={d_val}, N={n_val_formatted}$)"
+        except IndexError:
+            title = p_name.replace("_", " ").title()
+
+        fig.suptitle(title, fontsize=16)
+        fig.tight_layout(rect=[0, 0.05, 1, 0.95])  # Adjust layout for suptitle and legend
+
+        plot_dir = "plots"
+        os.makedirs(plot_dir, exist_ok=True)
+        plot_filename = os.path.join(plot_dir, f"combined_{p_name}.png")
+        plt.savefig(plot_filename, bbox_inches="tight")
+        plt.close()
+        print(f"\nCombined plot saved to '{plot_filename}'")
+
+
+def generate_optimizer_time_plot(runs: List[Dict[str, Any]], entity: str, color_map: Dict[str, Any] | None = None):
+    """
+    Generates a bar plot comparing the final optimizer time for each optimizer,
+    creating one plot per project.
+    """
+    if not entity:
+        print("!!! ERROR: W&B entity not provided. Cannot fetch data from API. !!!")
+        return
+
+    print("\n--- Generating optimizer time comparison plots... ---")
+
+    # Group runs by project name (p_name)
+    runs_by_project = defaultdict(list)
+    for run_info in runs:
+        runs_by_project[run_info["p_name"]].append(run_info)
+
+    api = wandb.Api()
+
+    for p_name, project_runs in runs_by_project.items():
+        optimizer_times = defaultdict(list)
+
+        # Group by optimizer within the project
+        runs_by_optimizer = defaultdict(list)
+        for run_info in project_runs:
+            runs_by_optimizer[run_info["o_name"]].append(run_info)
+
+        for o_name, run_list in runs_by_optimizer.items():
+            for run_info in run_list:
+                try:
+                    run_path = f"{entity}/{p_name}/{run_info['wandb_id']}"
+                    run = api.run(run_path)
+                    if "optimizer_time" in run.summary:
+                        optimizer_times[o_name].append(run.summary["optimizer_time"])
+                    else:
+                        print(
+                            f"    -> WARNING: 'optimizer_time' not found in summary for run {run_info['wandb_id']} in project {p_name}."
+                        )
+                except Exception as e:
+                    print(f"    -> WARNING: Could not fetch run summary for {run_info['wandb_id']}. Error: {e}")
+
+        if not optimizer_times:
+            print(f"No optimizer time data found for project {p_name}")
             continue
 
-        local_history = local_data.get("history", {})
-        # Line plots
+        avg_times = {o_name: sum(times) / len(times) for o_name, times in optimizer_times.items()}
+
+        # Sort by optimizer name for consistent plotting order
+        sorted_optimizers = sorted(avg_times.keys())
+        sorted_times = [avg_times[o_name] for o_name in sorted_optimizers]
+
+        bar_colors = None
+        if color_map:
+            bar_colors = [color_map.get(o_name) for o_name in sorted_optimizers]
+
+        plt.figure(figsize=(4, 6))
+        plt.bar(sorted_optimizers, sorted_times, color=bar_colors, width=0.4)
+        plt.xlabel("Optimizer")
+        plt.ylabel("Optimizer Time (s)")
+        plt.title("Optimizer Time")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+
+        plot_dir = "plots"
+        os.makedirs(plot_dir, exist_ok=True)
+        plot_filename = os.path.join(plot_dir, f"{p_name}_optimizer_time.png")
+        plt.savefig(plot_filename)
+        plt.close()
+        print(f"\nBar plot for project '{p_name}' saved to '{plot_filename}'")
+
+
+def generate_plots_from_api(
+    runs: List[Dict[str, Any]], metrics_to_plot: List[str], entity: str, color_map: Dict[str, Any] | None = None
+):
+    """
+    Fetches run data from the W&B API and generates plots for specified metrics,
+    grouping by project and then by optimizer.
+    """
+    if not entity:
+        print("!!! ERROR: W&B entity not provided. Cannot fetch data from API. !!!")
+        return
+
+    print("\n--- Generating plots from W&B API data... ---")
+
+    # Group runs first by project name (p_name), then by optimizer (o_name)
+    runs_by_project = defaultdict(lambda: defaultdict(list))
+    for run_info in runs:
+        runs_by_project[run_info["p_name"]][run_info["o_name"]].append(run_info)
+
+    api = wandb.Api()
+
+    # --- Iterate over each project ---
+    for p_name, optimizers in runs_by_project.items():
+        print(f"\n--- Generating plots for project: {p_name} ---")
+
+        # --- Iterate over each metric to create a separate plot ---
         for metric in metrics_to_plot:
-            if metric in local_history and local_history[metric]:
-                metric_df = pd.DataFrame.from_records(local_history[metric])
-                data_for_plots[p_name][metric][o_name].append(metric_df)
-        # Optimizer times for boxplot
-        if "optimizer_time" in local_data:
-            optimizer_times[p_name][o_name].append(local_data["optimizer_time"])
+            plt.figure(figsize=(5, 6))
+            all_optimizers_had_data = False
 
-    # --- Generate and Save Plots ---
-    plot_dir = "plots"
-    os.makedirs(plot_dir, exist_ok=True)
+            # --- Iterate over each optimizer group in the project ---
+            # Sort optimizer names to ensure consistent plot ordering and legend
+            sorted_optimizer_names = sorted(optimizers.keys())
+            for o_name in sorted_optimizer_names:
+                run_list = optimizers[o_name]
+                print(f"  Processing optimizer: {o_name} ({len(run_list)} seed(s))")
 
-    # Metrics that should be plotted on a log scale
-    log_scale_metrics = ["estimation_error", "inv_hess_error_fro"]
+                all_histories = []
+                for run_info in run_list:
+                    try:
+                        run_path = f"{entity}/{p_name}/{run_info['wandb_id']}"
+                        run = api.run(run_path)
+                        # Use scan_history to fetch all data points, not just a sample provided by run.history()
+                        scanned_data = run.scan_history(keys=["samples", metric])
+                        history = pd.DataFrame(list(scanned_data))
 
-    # Line plots
-    for p_name, metrics in data_for_plots.items():
-        for metric, optimizers in metrics.items():
-            plt.figure(figsize=(10, 6))
-            for o_name, dfs in optimizers.items():
-                if dfs:
-                    # Average across seeds
-                    merged_df = pd.concat(dfs).groupby("samples").mean().reset_index()
-                    plt.plot(merged_df["samples"], merged_df[metric], label=o_name)
+                        if not history.empty and metric in history.columns and not history[metric].dropna().empty:
+                            all_histories.append(history.set_index("samples")[[metric]].dropna())
+                    except Exception as e:
+                        print(f"    -> WARNING: Could not fetch run {run_info['wandb_id']}. Error: {e}")
+
+                if not all_histories:
+                    print(f"    -> No data found for metric '{metric}' in optimizer '{o_name}'")
+                    continue
+
+                all_optimizers_had_data = True
+                # Combine histories from all seeds and average them
+                combined_history = pd.concat(all_histories)
+                mean_history = combined_history.groupby(combined_history.index).mean()
+
+                plot_color = color_map.get(o_name) if color_map else None
+                plt.plot(mean_history.index, mean_history[metric], label=o_name, color=plot_color)
+
+            # --- Finalize and Save the Plot ---
+            if not all_optimizers_had_data:
+                print(f"\nNo data found for any optimizer for metric '{metric}'. Skipping plot.")
+                plt.close()
+                continue
+
+            metric_name_map = {
+                "estimation_error": r"$\|\theta_n - \theta^*\|^2$",
+                "inv_hess_error_fro": r"$\|A_n^{-1} - H^{-1}\|_F^2$",
+            }
+            pretty_metric_name = metric_name_map.get(metric, metric)
+
+            # Format title from p_name to be more descriptive
+            try:
+                name_parts = p_name.split("_")
+                model_type = name_parts[0].capitalize()
+                d_val = [p for p in name_parts if p.startswith("d-")][0].split("-")[1]
+                n_val_str = [p for p in name_parts if p.startswith("N-")][0].split("-")[1]
+
+                if "e" in n_val_str:
+                    base, exp = n_val_str.split("e")
+                    n_val_formatted = f"{base} \\times 10^{{{exp}}}"
+                else:
+                    n_val_formatted = n_val_str
+
+                title = f"{model_type} ($d={d_val}, N={n_val_formatted}$)"
+            except IndexError:
+                # Fallback for unexpected p_name formats
+                title = p_name.replace("_", " ").title()
+
+            plt.title(title)
             plt.xlabel("Samples")
-            plt.ylabel(metric)
-            plt.title(f"{metric} for {p_name}")
-
-            if metric in log_scale_metrics:
-                plt.yscale("log")
+            plt.ylabel(pretty_metric_name, rotation="vertical")
+            if "error" in metric.lower():
+                plt.xscale("log")
+                plt.yscale("log")  # Use log scale for error plots
+                ax = plt.gca()
+                ax.yaxis.set_major_formatter(mticker.ScalarFormatter())
+                ax.yaxis.set_minor_formatter(mticker.NullFormatter())
 
             plt.legend()
-            plt.grid(True, which="both", ls="--")
-            plt.savefig(os.path.join(plot_dir, f"{p_name}_{metric}.png"))
-            plt.close()
-
-    # Box plot for optimizer times
-    for p_name, optimizers in optimizer_times.items():
-        avg_times = {o_name: sum(times) / len(times) for o_name, times in optimizers.items() if times}
-        if avg_times:
-            df = pd.DataFrame(list(avg_times.items()), columns=["Optimizer", "Time"])
-            plt.figure(figsize=(10, 6))
-            plt.bar(df["Optimizer"], df["Time"])
-            plt.ylabel("Average Optimizer Time (s)")
-            plt.title(f"Average Optimizer Time for {p_name}")
-            plt.xticks(rotation=45, ha="right")
             plt.tight_layout()
-            plt.savefig(os.path.join(plot_dir, f"{p_name}_optimizer_time.png"))
+
+            plot_dir = "plots"
+            os.makedirs(plot_dir, exist_ok=True)
+            plot_filename = os.path.join(plot_dir, f"{p_name}_{metric}.png")
+            plt.savefig(plot_filename)
             plt.close()
+            print(f"\nPlot saved to '{plot_filename}'")
 
-    print(f"Plots saved to '{plot_dir}/' directory.")
 
-
-def run_visualizations(runs_to_fetch: List[Dict[str, Any]], problem_files: List[str], latex: bool = False):
+def run_visualizations(
+    runs_to_fetch: List[Dict[str, Any]], problem_files: List[str], latex: bool = False, entity: str | None = None
+):
     """
     Separates synthetic and real-data runs and generates the appropriate
     visualizations for each type (plots for synthetic, tables for real).
@@ -823,7 +1096,29 @@ def run_visualizations(runs_to_fetch: List[Dict[str, Any]], problem_files: List[
     # Generate plots for any synthetic runs found
     if synthetic_runs:
         print("\n--- Generating plots for synthetic datasets... ---")
-        generate_plots(synthetic_runs, metrics_to_plot)
+
+        # Define a rename mapping for cleaner optimizer names in plots
+        optimizer_rename = {
+            "Stream_SGD": "SGD",
+            "Stream_SGD_Avg": "SGD-Avg",
+            "Stream_mSNA": "mSNA",
+            "Stream_mSNA_Avg": "mSNA-Avg",
+            "Stream_mSNA_ell-0,25": "mSNA (l=0.25)",
+            "Stream_mSNA_ell-0,5": "mSNA (l=0.5)",
+            "Stream_mSNA_init_hess-10d": "mSNA",
+            "Stream_mSNA_Avg_init_hess-10d": "mSNA-Avg",
+        }
+        # Apply the renaming to the synthetic runs data before plotting
+        for run in synthetic_runs:
+            run["o_name"] = optimizer_rename.get(run["o_name"], run["o_name"])
+
+        # Create a consistent color map for all optimizers across all synthetic plots
+        all_optimizer_names = sorted(list(set(run["o_name"] for run in synthetic_runs)))
+        # Use a built-in colormap from matplotlib
+        colormap = plt.get_cmap("tab10")
+        color_map = {name: colormap(i) for i, name in enumerate(all_optimizer_names)}
+
+        generate_combined_synthetic_plot(synthetic_runs, entity, color_map=color_map)
 
     # Generate tables for any real-data runs found
     if real_runs:
