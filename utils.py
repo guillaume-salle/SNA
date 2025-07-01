@@ -827,7 +827,7 @@ def generate_combined_synthetic_plot(runs: List[Dict[str, Any]], entity: str, co
 
             metric_name_map = {
                 "estimation_error": r"$\|\theta_n - \theta^*\|^2$",
-                "inv_hess_error_fro": r"$\|A_n^{-1} - (H^*)^{-1}\|_F^2$",
+                "inv_hess_error_fro": r"$\|A_n - (H^*)^{-1}\|_F^2$",
             }
             ax.set_ylabel(metric_name_map.get(metric, metric), rotation="vertical")
             ax.set_xlabel("Samples")
@@ -857,7 +857,7 @@ def generate_combined_synthetic_plot(runs: List[Dict[str, Any]], entity: str, co
             ax.set_xlabel("Optimizer")
             ax.set_ylabel("Optimizer Time (s)")
             ax.set_title("Optimizer Time")
-            ax.tick_params(axis="x", rotation=45)
+            ax.set_xticklabels([])  # Remove x-axis labels since they're in the legend
 
         # --- COMMON LEGEND & TITLE ---
         handles, labels = axes[0].get_legend_handles_labels()

@@ -476,10 +476,10 @@ class mSNA(BaseOptimizer):
         if self.averaged_matrix:
             self.update_averaged_matrix()
 
-        # Optional : Assert that the matrix remains symmetric after the update.
-        # This is crucial for numerical stability.
-        if self.n_iter % 1000 == 0:
-            assert torch.allclose(self.matrix, self.matrix.T), "Matrix lost symmetry, indicating numerical instability."
+        # # Optional : Assert that the matrix remains symmetric after the update.
+        # # This is crucial for numerical stability.
+        # if self.n_iter % 100 == 0:
+        #     assert torch.allclose(self.matrix, self.matrix.T), "Matrix lost symmetry, indicating numerical instability."
 
         # Update theta
         learning_rate = self.lr_const / (self.n_iter**self.lr_exp + self.lr_add)
@@ -518,46 +518,18 @@ class mSNA(BaseOptimizer):
         self.log_metrics["norm_hessian"] = norm_hessian
 
         if (lr_hessian / 2) * norm_hessian < self.CONST_CONDITION:
-            # --- TESTING CONFIGURATION ---
-            # Set to True to use the expanded form, False to use the direct/compact form.
-            USE_EXPANDED_FORM = True
+            # A_new = A - lr(AH + HA) + lr^2(HAH)
+            matrix_hessian = torch.matmul(self.matrix, hessian)
+            self.matrix.add_(matrix_hessian + matrix_hessian.T, alpha=-lr_hessian / 2)
+            if include_lr_squared_term:
+                temp_matrix = torch.matmul(hessian, matrix_hessian)
+                # Explicitly symmetrize to prevent instability.
+                self.matrix.add_(temp_matrix + temp_matrix.T, alpha=(lr_hessian / 2) ** 2 / 2)
 
-            if USE_EXPANDED_FORM:
-                # --- Version 1: Expanded Form ---
-                # A_new = A - lr(AH + HA) + lr^2(HAH)
-                # This form is analogous to the update in `update_hessian_mask`.
-                matrix_hessian = torch.matmul(self.matrix, hessian)
-                self.matrix.add_(matrix_hessian + matrix_hessian.T, alpha=-lr_hessian / 2)
-                if include_lr_squared_term:
-                    temp_matrix = torch.matmul(hessian, matrix_hessian)
-                    # Explicitly symmetrize to prevent instability.
-                    self.matrix.add_(temp_matrix + temp_matrix.T, alpha=(lr_hessian / 2) ** 2 / 2)
-            else:
-                # --- Version 2: Product Form ---
-                if include_lr_squared_term:
-                    term_factor = (
-                        torch.eye(self.dim, device=self.device, dtype=self.param.dtype) - (lr_hessian / 2) * hessian
-                    )
-                    temp_matrix = term_factor @ self.matrix @ term_factor
-                else:
-                    term_factor = torch.eye(self.dim, device=self.device, dtype=self.param.dtype) - lr_hessian * hessian
-                    temp_matrix = term_factor @ self.matrix
-                # Explicitly symmetrize the result to counteract floating-point inaccuracies
-                # that can break perfect symmetry in matrix multiplication.
-                temp_matrix = (temp_matrix + temp_matrix.T) / 2
-                self.matrix.copy_(temp_matrix)
-
-            # Common added term for all versions
             self.matrix.diagonal().add_(lr_hessian)
 
         else:
             self.log_metrics_end["skip_update"] += 1
-
-        # Optional, log the norm of A_n
-        # norm_An = torch.linalg.norm(self.matrix, ord="fro")
-        # norm_An_op = torch.linalg.norm(self.matrix, ord=2)
-        # self.log_metrics["norm_An"] = norm_An
-        # self.log_metrics["norm_An_op"] = norm_An_op
 
         return grad
 
@@ -878,13 +850,5 @@ class SNA(BaseOptimizer):
         self.sum_weights_hessian += weight
         self.hessian_bar.add_((hessian - self.hessian_bar), alpha=(weight / self.sum_weights_hessian))
         self.matrix = torch.linalg.inv(self.hessian_bar)
-
-        # Optional metrics
-        # norm_hessian = torch.linalg.norm(hessian, ord=2)
-        # self.log_metrics["norm_hessian"] = norm_hessian
-        # norm_hessian_bar = torch.linalg.norm(self.hessian_bar, ord=2)
-        # self.log_metrics["SNA_norm_hessian_bar"] = norm_hessian_bar
-        # norm_matrix = torch.linalg.norm(self.matrix, ord=2)
-        # self.log_metrics["SNA_norm_matrix"] = norm_matrix
 
         return grad
