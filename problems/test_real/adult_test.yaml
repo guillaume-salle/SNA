@@ -1,18 +1,15 @@
 dataset: adult
 dataset_params:
+  init_size: "expr: 2*d"
   test_size: 0.33 # Standard split for adult dataset
-  val_size: 0.0
   param_dim: 106
+  n_dataset: 11055
 
-log_test_every_n_batches: 200
-log_train_every_n_batches: 200
-
-optimal_lr: "expr: float(1e-6)"
+log_test_every_n_batches: 10
+log_train_every_n_batches: 10
 
 init_theta: true
-initialization:
-  gd_steps: 100
-  batch_size_fraction: 0.1
+optimal_lr: "expr: float(1e-10)"
 
 model: logistic_regression
 model_params:

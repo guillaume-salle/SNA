@@ -1,12 +1,14 @@
 dataset: mushrooms
 dataset_params:
-  test_size: 0.2 # 1625 / (6499 + 1625) ~ 0.2
-  val_size: 0.0
+  init_size: "expr: 2*d"
+  test_size: 0.2 
   param_dim: 126
+  n_dataset: 8124
 
-log_test_every_n_batches: 200
-log_train_every_n_batches: 200
+log_test_every_n_batches: 10
+log_train_every_n_batches: 10
 
+init_theta: true
 optimal_lr: 10.0
 
 model: logistic_regression

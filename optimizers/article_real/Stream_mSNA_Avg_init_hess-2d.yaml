@@ -1,0 +1,7 @@
+inherits_from: mSNA_Avg_base.yaml
+optimizer_params:
+  batch_size: "expr: d"
+init_params:
+  init_hess_inv: true
+  init_hess_inv_samples: "expr: 2*d" 
+  init_hess_inv_reg: "expr: float(1e-4)"

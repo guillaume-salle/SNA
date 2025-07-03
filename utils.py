@@ -2,6 +2,7 @@ import os
 import yaml
 import collections.abc
 import math
+import numpy as np
 import glob
 from typing import List, Dict, Any
 from collections import defaultdict
@@ -11,7 +12,6 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import torch
 from torch.utils.data import DataLoader
-import subprocess
 from objective_functions import (
     BaseObjectiveFunction,
     LinearRegression,
@@ -19,6 +19,7 @@ from objective_functions import (
 )
 from optimizers import SGD, mSNA, SNA, BaseOptimizer
 import wandb
+from datasets import load_dataset_from_source
 
 
 def expand_file_patterns(patterns: List[str]) -> List[str]:
@@ -418,6 +419,74 @@ class RunCompletionManager:
 # ============================================================================ #
 
 
+def generate_dataset_characteristics_table(problem_configs: List[Dict[str, Any]]):
+    """
+    Generates a LaTeX table with characteristics of the datasets.
+    """
+    print(f"\n--- Generating LaTeX table for dataset characteristics... ---")
+
+    table_data = []
+    for p_config in problem_configs:
+        dataset_name = p_config.get("dataset")
+        dataset_params = p_config.get("dataset_params", {})
+
+        # To get the exact train/test/init sizes, we need to load the dataset
+        loaded_data = load_dataset_from_source(
+            dataset_name=dataset_name,
+            random_state=0,  # seed doesn't matter for sizes
+            **dataset_params,
+        )
+
+        n_features = loaded_data["number_features"]
+        n_train = loaded_data["n_train"]
+        n_test = loaded_data["n_test"]
+        init_size = dataset_params.get("init_size", 0)
+
+        table_data.append(
+            {
+                "Dataset": dataset_name.capitalize(),
+                "Features": n_features,
+                "Training Set Size": n_train,
+                "Init Set Size": init_size,
+                "Testing Set Size": n_test,
+            }
+        )
+
+    if not table_data:
+        print("No real-data problem configs found to generate characteristics table.")
+        return
+
+    df = pd.DataFrame(table_data)
+    df.set_index("Dataset", inplace=True)
+    df.index.name = None  # Remove the index name to avoid the extra "Dataset" line in LaTeX
+
+    def comma_formatter(x):
+        return f"{x:,}"
+
+    styler = df.style.format(
+        {
+            "Features": comma_formatter,
+            "Training Set Size": comma_formatter,
+            "Initialization Set Size": comma_formatter,
+            "Testing Set Size": comma_formatter,
+        }
+    )
+    latex_string = styler.to_latex(
+        column_format="lrrrr",
+        caption="Key characteristics of the datasets used in this study.",
+        label="tab:dataset_characteristics",
+        hrules=True,  # Use hrules for booktabs style
+    )
+
+    print("\n" + "=" * 50)
+    print("COPY AND PASTE THE FOLLOWING LATEX CODE INTO YOUR .tex FILE")
+    print("=" * 50 + "\n")
+    print(latex_string)
+    print("\n" + "=" * 50)
+    print("Remember to include \\usepackage{booktabs} in your preamble.")
+    print("=" * 50 + "\n")
+
+
 def parse_local_run(local_dir: str, metrics_to_plot: List[str]) -> Dict | None:
     """
     Parses summary and history files from a local wandb run directory.
@@ -532,8 +601,8 @@ def format_table(df: pd.DataFrame) -> pd.DataFrame:
     return formatted_df
 
 
-def generate_accuracy_table(runs: List[Dict[str, Any]]):
-    print("\n--- Generating accuracy table from local run data... ---")
+def generate_accuracy_table(runs: List[Dict[str, Any]], latex: bool = False):
+    print(f"\n--- Generating {'LaTeX' if latex else 'accuracy'} table from local run data... ---")
     results_by_config = defaultdict(
         lambda: defaultdict(
             lambda: {
@@ -586,86 +655,53 @@ def generate_accuracy_table(runs: List[Dict[str, Any]]):
                 avg_train_loss = sum(results["train_losses"]) / len(results["train_losses"])
                 avg_test_loss = sum(results["test_losses"]) / len(results["test_losses"])
 
-                all_results.append(
-                    {"Dataset": p_name, "Metric": "Train Acc", "Optimizer": o_name, "Value": avg_train_acc * 100}
-                )
-                all_results.append(
-                    {"Dataset": p_name, "Metric": "Test Acc", "Optimizer": o_name, "Value": avg_test_acc * 100}
-                )
-                all_results.append(
-                    {"Dataset": p_name, "Metric": "Train Loss", "Optimizer": o_name, "Value": avg_train_loss}
-                )
-                all_results.append(
-                    {"Dataset": p_name, "Metric": "Test Loss", "Optimizer": o_name, "Value": avg_test_loss}
-                )
-                all_results.append({"Dataset": p_name, "Metric": "Time", "Optimizer": o_name, "Value": avg_time})
+                if latex:
+                    # For LaTeX, create a different data structure
+                    all_results.append(
+                        {
+                            "Dataset": p_name,
+                            "Optimizer": o_name,
+                            "Train Acc": avg_train_acc * 100,
+                            "Test Acc": avg_test_acc * 100,
+                            "Train Loss": avg_train_loss,
+                            "Test Loss": avg_test_loss,
+                            "Time": avg_time,
+                        }
+                    )
+                else:
+                    # For console table, use the original structure
+                    all_results.append(
+                        {"Dataset": p_name, "Metric": "Train Acc", "Optimizer": o_name, "Value": avg_train_acc * 100}
+                    )
+                    all_results.append(
+                        {"Dataset": p_name, "Metric": "Test Acc", "Optimizer": o_name, "Value": avg_test_acc * 100}
+                    )
+                    all_results.append(
+                        {"Dataset": p_name, "Metric": "Train Loss", "Optimizer": o_name, "Value": avg_train_loss}
+                    )
+                    all_results.append(
+                        {"Dataset": p_name, "Metric": "Test Loss", "Optimizer": o_name, "Value": avg_test_loss}
+                    )
+                    all_results.append({"Dataset": p_name, "Metric": "Time", "Optimizer": o_name, "Value": avg_time})
 
     if not all_results:
         print("No results to display.")
         return
 
-    final_table = format_table(pd.DataFrame(all_results))
-    print("\n--- Results Table ---")
-    print(final_table.to_string())
+    if latex:
+        # Generate LaTeX table
+        _generate_latex_table(pd.DataFrame(all_results))
+    else:
+        # Generate console table
+        final_table = format_table(pd.DataFrame(all_results))
+        print("\n--- Results Table ---")
+        print(final_table.to_string())
 
 
-def generate_accuracy_table_latex(runs: List[Dict[str, Any]]):
+def _generate_latex_table(df: pd.DataFrame):
     """
-    Generates a publication-quality LaTeX table from run data, correctly handling
-    per-group highlighting and special character escaping.
+    Helper function to generate a publication-quality LaTeX table from DataFrame.
     """
-    print("\n--- Generating LaTeX table for publication (v2)... ---")
-
-    # --- 1. Data Aggregation (same as your original function) ---
-    # (This section remains the same as your script)
-    results_by_config = defaultdict(
-        lambda: defaultdict(
-            lambda: {"train_accs": [], "test_accs": [], "optimizer_times": [], "train_losses": [], "test_losses": []}
-        )
-    )
-    for run_info in runs:
-        p_name, o_name = run_info["p_name"], run_info["o_name"]
-        local_data = parse_local_run(run_info["local_dir"], [])
-        if not local_data:
-            continue
-        required_metrics = [
-            "final_train_accuracy",
-            "final_test_accuracy",
-            "optimizer_time",
-            "final_train_loss",
-            "final_test_loss",
-        ]
-        if all(key in local_data for key in required_metrics):
-            results_by_config[p_name][o_name]["train_accs"].append(local_data["final_train_accuracy"])
-            results_by_config[p_name][o_name]["test_accs"].append(local_data["final_test_accuracy"])
-            results_by_config[p_name][o_name]["optimizer_times"].append(local_data["optimizer_time"])
-            results_by_config[p_name][o_name]["train_losses"].append(local_data["final_train_loss"])
-            results_by_config[p_name][o_name]["test_losses"].append(local_data["final_test_loss"])
-
-    all_results = []
-    for p_name, optimizers in results_by_config.items():
-        for o_name, results in optimizers.items():
-            if all(results.get(key) for key in results.keys()):
-                all_results.append(
-                    {
-                        "Dataset": p_name,
-                        "Optimizer": o_name,
-                        "Train Acc": sum(results["train_accs"]) / len(results["train_accs"]) * 100,
-                        "Test Acc": sum(results["test_accs"]) / len(results["test_accs"]) * 100,
-                        "Train Loss": sum(results["train_losses"]) / len(results["train_losses"]),
-                        "Test Loss": sum(results["test_losses"]) / len(results["test_losses"]),
-                        "Time": sum(results["optimizer_times"]) / len(results["optimizer_times"]),
-                    }
-                )
-
-    if not all_results:
-        print("No results to generate a table.")
-        return
-
-    df = pd.DataFrame(all_results)
-
-    # --- 2. Data Formatting and Styling ---
-
     # Rename optimizers first for cleaner, more readable names in the table
     optimizer_rename = {
         "Stream_SGD": "SGD",
@@ -722,8 +758,7 @@ def generate_accuracy_table_latex(runs: List[Dict[str, Any]]):
         }
     )
 
-    # --- 3. Generate LaTeX Code ---
-
+    # --- Generate LaTeX Code ---
     latex_string = styler.to_latex(
         column_format="llrrrrr",
         position="!htbp",
@@ -755,10 +790,6 @@ def generate_accuracy_table_latex(runs: List[Dict[str, Any]]):
                     new_lines.append(r"\midrule")
                 else:
                     first_multirow_found = True
-            # Stop when we hit the final rule of the table
-            if r"\bottomrule" in line:
-                new_lines.append(line)
-                break
             new_lines.append(line)
         latex_string = "\n".join(new_lines)
 
@@ -793,19 +824,57 @@ def generate_combined_synthetic_plot(runs: List[Dict[str, Any]], entity: str, co
     api = wandb.Api()
 
     for p_name, project_runs in runs_by_project.items():
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))  # 3 plots in a row
+        # Get the first run's config to extract the dimension
+        if project_runs:
+            first_run = project_runs[0]
+            run_path = f"{entity}/{p_name}/{first_run['wandb_id']}"
+            run = api.run(run_path)
+            if "dataset_params" in run.config and "param_dim" in run.config["dataset_params"]:
+                d = run.config["dataset_params"]["param_dim"]
+                print(f"   Using dimension d={d} for project {p_name}")
+            else:
+                raise ValueError(f"Could not find param_dim in config for project {p_name}")
+
+        fig, axes = plt.subplots(
+            1, 3, figsize=(12, 3.5), gridspec_kw={"width_ratios": [1, 1, 0.6]}
+        )  # Make bar plot narrower
 
         # Group runs by optimizer for easier iteration
         runs_by_optimizer = defaultdict(list)
         for run_info in project_runs:
             runs_by_optimizer[run_info["o_name"]].append(run_info)
-        sorted_optimizer_names = sorted(runs_by_optimizer.keys())
+
+        # Define preferred ordering for optimizers
+        optimizer_order_preference = [
+            "SGD",
+            "SGD-Avg",
+            r"mSNA ($\ell=1$)",
+            r"mSNA-Avg ($\ell=1$)",
+            r"mSNA ($\ell=d^{0.25}$)",
+            r"mSNA-Avg ($\ell=d^{0.25}$)",
+            r"mSNA ($\ell=d^{0.5}$)",
+            r"mSNA-Avg ($\ell=d^{0.5}$)",
+        ]
+
+        # Create ordered optimizer names based on preference and what's actually present
+        all_optimizer_names = set(runs_by_optimizer.keys())
+        ordered_optimizer_names = []
+
+        # First, add optimizers in preferred order if they exist
+        for preferred_name in optimizer_order_preference:
+            if preferred_name in all_optimizer_names:
+                ordered_optimizer_names.append(preferred_name)
+
+        # Then add any remaining optimizers not in the preference list
+        for name in sorted(all_optimizer_names):
+            if name not in optimizer_order_preference:
+                ordered_optimizer_names.append(name)
 
         # --- PLOTS 1 & 2: Line plots for errors ---
         metrics_to_plot = ["estimation_error", "inv_hess_error_fro"]
         for i, metric in enumerate(metrics_to_plot):
             ax = axes[i]
-            for o_name in sorted_optimizer_names:
+            for o_name in ordered_optimizer_names:
                 run_list = runs_by_optimizer[o_name]
                 all_histories = []
                 for run_info in run_list:
@@ -827,12 +896,13 @@ def generate_combined_synthetic_plot(runs: List[Dict[str, Any]], entity: str, co
 
             metric_name_map = {
                 "estimation_error": r"$\|\theta_n - \theta^*\|^2$",
-                "inv_hess_error_fro": r"$\|A_n - (H^*)^{-1}\|_F^2$",
+                "inv_hess_error_fro": r"$\|A_n - H^{-1}\|_F^2$",
             }
             ax.set_ylabel(metric_name_map.get(metric, metric), rotation="vertical")
             ax.set_xlabel("Samples")
             ax.set_xscale("log")
             ax.set_yscale("log")
+            ax.set_xlim(left=d)  # Start x-axis at d samples
             ax.yaxis.set_major_formatter(mticker.ScalarFormatter())
             ax.yaxis.set_minor_formatter(mticker.NullFormatter())
 
@@ -851,34 +921,21 @@ def generate_combined_synthetic_plot(runs: List[Dict[str, Any]], entity: str, co
 
         if optimizer_times:
             avg_times = {o_name: sum(times) / len(times) for o_name, times in optimizer_times.items()}
-            sorted_times = [avg_times[o_name] for o_name in sorted_optimizer_names]
-            bar_colors = [color_map.get(o_name) for o_name in sorted_optimizer_names] if color_map else None
-            ax.bar(sorted_optimizer_names, sorted_times, color=bar_colors, width=0.4)
+            ordered_times = [avg_times[o_name] for o_name in ordered_optimizer_names]
+            bar_colors = [color_map.get(o_name) for o_name in ordered_optimizer_names] if color_map else None
+            ax.bar(ordered_optimizer_names, ordered_times, color=bar_colors, width=0.4)
             ax.set_xlabel("Optimizer")
             ax.set_ylabel("Optimizer Time (s)")
-            ax.set_title("Optimizer Time")
             ax.set_xticklabels([])  # Remove x-axis labels since they're in the legend
 
         # --- COMMON LEGEND & TITLE ---
         handles, labels = axes[0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, -0.1), ncol=len(sorted_optimizer_names))
 
-        try:
-            name_parts = p_name.split("_")
-            model_type = name_parts[0].capitalize()
-            d_val = [p for p in name_parts if p.startswith("d-")][0].split("-")[1]
-            n_val_str = [p for p in name_parts if p.startswith("N-")][0].split("-")[1]
-            if "e" in n_val_str:
-                base, exp = n_val_str.split("e")
-                n_val_formatted = f"{base} \\times 10^{{{exp}}}"
-            else:
-                n_val_formatted = n_val_str
-            title = f"{model_type} ($d={d_val}, N={n_val_formatted}$)"
-        except IndexError:
-            title = p_name.replace("_", " ").title()
+        # Since plots were created in the correct order, the handles and labels should already be ordered correctly
+        # Just use them as-is since they match the ordered_optimizer_names order
+        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, -0.1), ncol=len(labels))
 
-        fig.suptitle(title, fontsize=16)
-        fig.tight_layout(rect=[0, 0.05, 1, 0.95])  # Adjust layout for suptitle and legend
+        fig.tight_layout(rect=[0, 0.05, 1, 1])  # Adjust layout for legend
 
         plot_dir = "plots"
         os.makedirs(plot_dir, exist_ok=True)
@@ -888,191 +945,12 @@ def generate_combined_synthetic_plot(runs: List[Dict[str, Any]], entity: str, co
         print(f"\nCombined plot saved to '{plot_filename}'")
 
 
-def generate_optimizer_time_plot(runs: List[Dict[str, Any]], entity: str, color_map: Dict[str, Any] | None = None):
-    """
-    Generates a bar plot comparing the final optimizer time for each optimizer,
-    creating one plot per project.
-    """
-    if not entity:
-        print("!!! ERROR: W&B entity not provided. Cannot fetch data from API. !!!")
-        return
-
-    print("\n--- Generating optimizer time comparison plots... ---")
-
-    # Group runs by project name (p_name)
-    runs_by_project = defaultdict(list)
-    for run_info in runs:
-        runs_by_project[run_info["p_name"]].append(run_info)
-
-    api = wandb.Api()
-
-    for p_name, project_runs in runs_by_project.items():
-        optimizer_times = defaultdict(list)
-
-        # Group by optimizer within the project
-        runs_by_optimizer = defaultdict(list)
-        for run_info in project_runs:
-            runs_by_optimizer[run_info["o_name"]].append(run_info)
-
-        for o_name, run_list in runs_by_optimizer.items():
-            for run_info in run_list:
-                try:
-                    run_path = f"{entity}/{p_name}/{run_info['wandb_id']}"
-                    run = api.run(run_path)
-                    if "optimizer_time" in run.summary:
-                        optimizer_times[o_name].append(run.summary["optimizer_time"])
-                    else:
-                        print(
-                            f"    -> WARNING: 'optimizer_time' not found in summary for run {run_info['wandb_id']} in project {p_name}."
-                        )
-                except Exception as e:
-                    print(f"    -> WARNING: Could not fetch run summary for {run_info['wandb_id']}. Error: {e}")
-
-        if not optimizer_times:
-            print(f"No optimizer time data found for project {p_name}")
-            continue
-
-        avg_times = {o_name: sum(times) / len(times) for o_name, times in optimizer_times.items()}
-
-        # Sort by optimizer name for consistent plotting order
-        sorted_optimizers = sorted(avg_times.keys())
-        sorted_times = [avg_times[o_name] for o_name in sorted_optimizers]
-
-        bar_colors = None
-        if color_map:
-            bar_colors = [color_map.get(o_name) for o_name in sorted_optimizers]
-
-        plt.figure(figsize=(4, 6))
-        plt.bar(sorted_optimizers, sorted_times, color=bar_colors, width=0.4)
-        plt.xlabel("Optimizer")
-        plt.ylabel("Optimizer Time (s)")
-        plt.title("Optimizer Time")
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-
-        plot_dir = "plots"
-        os.makedirs(plot_dir, exist_ok=True)
-        plot_filename = os.path.join(plot_dir, f"{p_name}_optimizer_time.png")
-        plt.savefig(plot_filename)
-        plt.close()
-        print(f"\nBar plot for project '{p_name}' saved to '{plot_filename}'")
-
-
-def generate_plots_from_api(
-    runs: List[Dict[str, Any]], metrics_to_plot: List[str], entity: str, color_map: Dict[str, Any] | None = None
-):
-    """
-    Fetches run data from the W&B API and generates plots for specified metrics,
-    grouping by project and then by optimizer.
-    """
-    if not entity:
-        print("!!! ERROR: W&B entity not provided. Cannot fetch data from API. !!!")
-        return
-
-    print("\n--- Generating plots from W&B API data... ---")
-
-    # Group runs first by project name (p_name), then by optimizer (o_name)
-    runs_by_project = defaultdict(lambda: defaultdict(list))
-    for run_info in runs:
-        runs_by_project[run_info["p_name"]][run_info["o_name"]].append(run_info)
-
-    api = wandb.Api()
-
-    # --- Iterate over each project ---
-    for p_name, optimizers in runs_by_project.items():
-        print(f"\n--- Generating plots for project: {p_name} ---")
-
-        # --- Iterate over each metric to create a separate plot ---
-        for metric in metrics_to_plot:
-            plt.figure(figsize=(5, 6))
-            all_optimizers_had_data = False
-
-            # --- Iterate over each optimizer group in the project ---
-            # Sort optimizer names to ensure consistent plot ordering and legend
-            sorted_optimizer_names = sorted(optimizers.keys())
-            for o_name in sorted_optimizer_names:
-                run_list = optimizers[o_name]
-                print(f"  Processing optimizer: {o_name} ({len(run_list)} seed(s))")
-
-                all_histories = []
-                for run_info in run_list:
-                    try:
-                        run_path = f"{entity}/{p_name}/{run_info['wandb_id']}"
-                        run = api.run(run_path)
-                        # Use scan_history to fetch all data points, not just a sample provided by run.history()
-                        scanned_data = run.scan_history(keys=["samples", metric])
-                        history = pd.DataFrame(list(scanned_data))
-
-                        if not history.empty and metric in history.columns and not history[metric].dropna().empty:
-                            all_histories.append(history.set_index("samples")[[metric]].dropna())
-                    except Exception as e:
-                        print(f"    -> WARNING: Could not fetch run {run_info['wandb_id']}. Error: {e}")
-
-                if not all_histories:
-                    print(f"    -> No data found for metric '{metric}' in optimizer '{o_name}'")
-                    continue
-
-                all_optimizers_had_data = True
-                # Combine histories from all seeds and average them
-                combined_history = pd.concat(all_histories)
-                mean_history = combined_history.groupby(combined_history.index).mean()
-
-                plot_color = color_map.get(o_name) if color_map else None
-                plt.plot(mean_history.index, mean_history[metric], label=o_name, color=plot_color)
-
-            # --- Finalize and Save the Plot ---
-            if not all_optimizers_had_data:
-                print(f"\nNo data found for any optimizer for metric '{metric}'. Skipping plot.")
-                plt.close()
-                continue
-
-            metric_name_map = {
-                "estimation_error": r"$\|\theta_n - \theta^*\|^2$",
-                "inv_hess_error_fro": r"$\|A_n^{-1} - H^{-1}\|_F^2$",
-            }
-            pretty_metric_name = metric_name_map.get(metric, metric)
-
-            # Format title from p_name to be more descriptive
-            try:
-                name_parts = p_name.split("_")
-                model_type = name_parts[0].capitalize()
-                d_val = [p for p in name_parts if p.startswith("d-")][0].split("-")[1]
-                n_val_str = [p for p in name_parts if p.startswith("N-")][0].split("-")[1]
-
-                if "e" in n_val_str:
-                    base, exp = n_val_str.split("e")
-                    n_val_formatted = f"{base} \\times 10^{{{exp}}}"
-                else:
-                    n_val_formatted = n_val_str
-
-                title = f"{model_type} ($d={d_val}, N={n_val_formatted}$)"
-            except IndexError:
-                # Fallback for unexpected p_name formats
-                title = p_name.replace("_", " ").title()
-
-            plt.title(title)
-            plt.xlabel("Samples")
-            plt.ylabel(pretty_metric_name, rotation="vertical")
-            if "error" in metric.lower():
-                plt.xscale("log")
-                plt.yscale("log")  # Use log scale for error plots
-                ax = plt.gca()
-                ax.yaxis.set_major_formatter(mticker.ScalarFormatter())
-                ax.yaxis.set_minor_formatter(mticker.NullFormatter())
-
-            plt.legend()
-            plt.tight_layout()
-
-            plot_dir = "plots"
-            os.makedirs(plot_dir, exist_ok=True)
-            plot_filename = os.path.join(plot_dir, f"{p_name}_{metric}.png")
-            plt.savefig(plot_filename)
-            plt.close()
-            print(f"\nPlot saved to '{plot_filename}'")
-
-
 def run_visualizations(
-    runs_to_fetch: List[Dict[str, Any]], problem_files: List[str], latex: bool = False, entity: str | None = None
+    runs_to_fetch: List[Dict[str, Any]],
+    problem_files: List[str],
+    problem_configs: Dict[str, Dict[str, Any]],
+    latex: bool = False,
+    entity: str | None = None,
 ):
     """
     Separates synthetic and real-data runs and generates the appropriate
@@ -1101,12 +979,14 @@ def run_visualizations(
         optimizer_rename = {
             "Stream_SGD": "SGD",
             "Stream_SGD_Avg": "SGD-Avg",
-            "Stream_mSNA": "mSNA",
-            "Stream_mSNA_Avg": "mSNA-Avg",
-            "Stream_mSNA_ell-0,25": "mSNA (l=0.25)",
-            "Stream_mSNA_ell-0,5": "mSNA (l=0.5)",
-            "Stream_mSNA_init_hess-10d": "mSNA",
-            "Stream_mSNA_Avg_init_hess-10d": "mSNA-Avg",
+            "Stream_mSNA": r"mSNA ($\ell=1$)",
+            "Stream_mSNA_Avg": r"mSNA-Avg ($\ell=1$)",
+            "Stream_mSNA_ell-0,25": r"mSNA ($\ell=d^{0.25}$)",
+            "Stream_mSNA_Avg_ell-0,25": r"mSNA-Avg ($\ell=d^{0.25}$)",
+            "Stream_mSNA_ell-0,5": r"mSNA ($\ell=d^{0.5}$)",
+            "Stream_mSNA_Avg_ell-0,5": r"mSNA-Avg ($\ell=d^{0.5}$)",
+            "Stream_mSNA_init_hess-10d": r"mSNA ($\ell=1$)",
+            "Stream_mSNA_Avg_init_hess-10d": r"mSNA-Avg ($\ell=1$)",
         }
         # Apply the renaming to the synthetic runs data before plotting
         for run in synthetic_runs:
@@ -1124,9 +1004,16 @@ def run_visualizations(
     if real_runs:
         print("\n--- Generating table for real datasets... ---")
         if latex:
-            generate_accuracy_table_latex(real_runs)
-        else:
-            generate_accuracy_table(real_runs)
+            # Generate dataset characteristics table
+            real_problem_configs = []
+            for p_name, p_config in problem_configs.items():
+                if not is_synthetic_map.get(p_name, False):
+                    real_problem_configs.append(p_config)
+
+            if real_problem_configs:
+                generate_dataset_characteristics_table(real_problem_configs)
+
+        generate_accuracy_table(real_runs, latex=latex)
 
 
 # ============================================================================ #
@@ -1224,9 +1111,6 @@ def find_best_lr(problem_config: Dict, seed: int):
     computes the loss for one step, and plots the results.
     """
     print("--- Starting Learning Rate Finder ---")
-    # Lazy import to avoid circular dependencies at module level
-    from datasets import load_dataset_from_source
-    import numpy as np
 
     # --- Setup ---
     device = "cuda" if torch.cuda.is_available() else "cpu"

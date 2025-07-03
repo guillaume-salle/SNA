@@ -1,13 +1,14 @@
-dataset: covtype_sklearn
+dataset: covtype
 dataset_params:
+  init_size: "expr: 2*d"
   test_size: 0.2
-  val_size: 0.0
   param_dim: 55
   n_dataset: 581012
 
-log_test_every_n_batches: 200
-log_train_every_n_batches: 200
+log_test_every_n_batches: 100
+log_train_every_n_batches: 100
 
+init_theta: true
 optimal_lr: "expr: float(1e-7)"
 
 model: logistic_regression

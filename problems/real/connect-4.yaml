@@ -1,13 +1,15 @@
 dataset: connect-4
 dataset_params:
+  init_size: "expr: 2*d"
   test_size: 0.2
-  val_size: 0.0
   param_dim: 3114
+  n_dataset: 67557
 
-log_test_every_n_batches: 200
-log_train_every_n_batches: 200
+log_test_every_n_batches: 10 
+log_train_every_n_batches: 10 
 
-optimal_lr: 3.0
+init_theta: true
+optimal_lr: 2.0
 
 model: logistic_regression
 model_params:

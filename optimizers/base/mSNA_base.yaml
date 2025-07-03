@@ -1,7 +1,7 @@
 inherits_from: SGD_base.yaml
 optimizer: "mSNA"
 optimizer_params:
-  lr_hess_exp: 0.66
+  lr_hess_exp: 0.75
   lr_hess_const: "expr: float(d)"
   lr_hess_add: "expr: float(d)"
   averaged_matrix: False

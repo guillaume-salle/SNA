@@ -1,12 +1,10 @@
 import torch
-import torch.distributions as dist
 from torch.utils.data import Dataset, IterableDataset
 from typing import Generator, Tuple, Optional
 import math
 from sklearn.datasets import fetch_covtype, fetch_openml
 from sklearn.model_selection import train_test_split
 import numpy as np
-import openml
 import pandas as pd
 from torchvision import datasets as tv_datasets
 from torchvision.transforms import ToTensor
@@ -268,7 +266,7 @@ def generate_regression(
     dataset_params: dict,
     device: str,
     data_batch_size: int,
-    rng_data: torch.Generator,
+    seed: int,
     data_gen_device: str,
 ) -> Tuple[RegressionIterableDataset, torch.Tensor, torch.Tensor | None]:
     """
@@ -282,7 +280,7 @@ def generate_regression(
                            param_dim, bias, cov_type, cov_const, diag, variance.
     device (str): The target device for the output tensors (true_theta, true_hessian).
     data_batch_size (int): Batch size for the iterable dataset to generate.
-    rng_data (torch.Generator): Dedicated CPU generator for stochastic operations.
+    seed (int): Seed for the random number generator.
     data_gen_device (str): Device for the generation process itself.
 
     Returns:
@@ -291,6 +289,10 @@ def generate_regression(
         the true_theta tensor (on `device`),
         and the true_hessian tensor (on `device`, or None).
     """
+    # Create and seed a dedicated RNG for the data generation.
+    rng_data = torch.Generator(device=data_gen_device)
+    rng_data.manual_seed(seed)
+
     # Unpack parameters from dataset_params
     n_dataset: int = dataset_params["n_dataset"]
     true_theta_input: list | torch.Tensor | None = dataset_params.get("true_theta")
@@ -383,70 +385,72 @@ def _split_and_convert_to_torch(
     X_np: np.ndarray,
     y_np: np.ndarray,
     test_size: float,
-    val_size: float,
+    init_size: int,
     random_state: int,
     dataset_name: str,
 ) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
     """
-    Splits numpy arrays into train, validation, and test sets and converts them to MyDataset objects.
+    Splits numpy arrays into train, initialization, and test sets and converts them to MyDataset objects.
     This function contains the common logic for data splitting and tensor conversion.
     """
     print(f"Total dataset size: {len(X_np)} samples.")
-    # Split data into training+validation and test sets
+    # Split data into training+initialization and test sets
     stratify_np = y_np if np.unique(y_np).size > 1 and np.min(np.bincount(y_np.astype(int))) > 1 else None
-    X_train_temp_np, X_test_np, y_train_temp_np, y_test_np = train_test_split(
+    X_non_test_np, X_test_np, y_non_test_np, y_test_np = train_test_split(
         X_np, y_np, test_size=test_size, random_state=random_state, stratify=stratify_np
     )
 
-    # Split training set into actual training and validation sets
-    if val_size > 0 and len(X_train_temp_np) > 0:
-        val_test_proportion = val_size / (1.0 - test_size)
-        stratify_train_temp = (
-            y_train_temp_np
-            if np.unique(y_train_temp_np).size > 1 and np.min(np.bincount(y_train_temp_np.astype(int))) > 1
+    # Split non-test set into actual training and initialization sets
+    if init_size > 0 and len(X_non_test_np) > init_size:
+        # Calculate init_size as a proportion of the non-test set
+        init_proportion = init_size / len(X_non_test_np)
+        stratify_non_test = (
+            y_non_test_np
+            if np.unique(y_non_test_np).size > 1 and np.min(np.bincount(y_non_test_np.astype(int))) > 1
             else None
         )
-        X_train_np, X_val_np, y_train_np, y_val_np = train_test_split(
-            X_train_temp_np,
-            y_train_temp_np,
-            test_size=val_test_proportion,
+        X_train_np, X_init_np, y_train_np, y_init_np = train_test_split(
+            X_non_test_np,
+            y_non_test_np,
+            test_size=init_proportion,
             random_state=random_state,
-            stratify=stratify_train_temp,
+            stratify=stratify_non_test,
         )
     else:
-        X_train_np, y_train_np = X_train_temp_np, y_train_temp_np
-        X_val_np = (
+        # Handle cases where init_size is 0 or there's not enough data.
+        X_train_np, y_train_np = X_non_test_np, y_non_test_np
+        X_init_np = (
             np.array([], dtype=np.float32).reshape(0, X_train_np.shape[1])
             if X_train_np.shape[0] > 0
             else np.array([], dtype=np.float32).reshape(0, X_np.shape[1])
         )
-        y_val_np = np.array([], dtype=np.float32)
+        y_init_np = np.array([], dtype=np.float32)
 
     # Convert to PyTorch tensors on CPU
     X_train = torch.tensor(X_train_np, dtype=torch.float32, device="cpu")
     Y_train = torch.tensor(y_train_np, dtype=torch.float32, device="cpu").squeeze()
-    X_val = torch.tensor(X_val_np, dtype=torch.float32, device="cpu")
-    Y_val = torch.tensor(y_val_np, dtype=torch.float32, device="cpu").squeeze()
+    X_init = torch.tensor(X_init_np, dtype=torch.float32, device="cpu")
+    Y_init = torch.tensor(y_init_np, dtype=torch.float32, device="cpu").squeeze()
     X_test = torch.tensor(X_test_np, dtype=torch.float32, device="cpu")
     Y_test = torch.tensor(y_test_np, dtype=torch.float32, device="cpu").squeeze()
 
     number_features = X_train.shape[1] if X_train.shape[0] > 0 else X_np.shape[1]
     print(f"Finished splitting and converting {dataset_name} dataset.")
     print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train.shape}")
-    print(f"  Validation X shape: {X_val.shape}, Validation Y shape: {Y_val.shape}")
+    print(f"  Initialization X shape: {X_init.shape}, Initialization Y shape: {Y_init.shape}")
     print(f"  Testing X shape: {X_test.shape}, Testing Y shape: {Y_test.shape}")
     print(f"  Number of features from data: {number_features}")
 
     return (
         MyDataset(X_train, Y_train),
-        MyDataset(X_val, Y_val),
+        MyDataset(X_init, Y_init),
         MyDataset(X_test, Y_test),
         number_features,
     )
 
 
 def load_openml_dataset(
-    dataset_name: str, test_size: float, val_size: float, random_state: int
+    dataset_name: str, test_size: float, init_size: int, random_state: int
 ) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
     """
     Fetch a dataset from OpenML using scikit-learn's fetch_openml.
@@ -455,17 +459,17 @@ def load_openml_dataset(
     print(f"Loading and processing {dataset_name} dataset via sklearn.fetch_openml...")
 
     version_to_fetch = "active"
-    if dataset_name == "connect-4":
-        print("  Note: Using version 2 of connect-4 dataset to avoid issues with version 1.")
-        version_to_fetch = 2
-    elif dataset_name == "PhishingWebsites":
-        print("  Note: Using version 2 of PhishingWebsites dataset.")
-        version_to_fetch = 1
-    elif dataset_name == "adult":
+    if dataset_name == "adult":
         print("  Note: Using version 2 of adult dataset.")
+        version_to_fetch = 2
+    elif dataset_name == "connect-4":
+        print("  Note: Using version 2 of connect-4 dataset.")
         version_to_fetch = 2
     elif dataset_name == "mushroom":
         print("  Note: Using version 1 of mushroom dataset.")
+        version_to_fetch = 1
+    elif dataset_name == "PhishingWebsites":
+        print("  Note: Using version 2 of PhishingWebsites dataset.")
         version_to_fetch = 1
 
     start_time = time.time()
@@ -527,11 +531,11 @@ def load_openml_dataset(
             f"Found {num_classes} classes: {y_categorical.cat.categories.to_list()}"
         )
 
-    return _split_and_convert_to_torch(X_np, y_np, test_size, val_size, random_state, dataset_name)
+    return _split_and_convert_to_torch(X_np, y_np, test_size, init_size, random_state, dataset_name)
 
 
 def load_mnist_dataset(
-    test_size: float, val_size: float, random_state: int
+    test_size: float, init_size: int, random_state: int
 ) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
     """
     Load and process the MNIST dataset for binary classification of even vs. odd digits.
@@ -554,11 +558,11 @@ def load_mnist_dataset(
     X_np = X_combined.reshape(X_combined.shape[0], -1).numpy()
     y_np = y_binary.numpy()
 
-    return _split_and_convert_to_torch(X_np, y_np, test_size, val_size, random_state, "MNIST")
+    return _split_and_convert_to_torch(X_np, y_np, test_size, init_size, random_state, "MNIST")
 
 
 def load_covtype_dataset_sklearn(
-    test_size: float, val_size: float, random_state: int
+    test_size: float, init_size: int, random_state: int
 ) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
     """
     Load and process the covtype dataset from sklearn.
@@ -573,22 +577,22 @@ def load_covtype_dataset_sklearn(
     X_np = X.astype(np.float32)
     y_np = y_binary
 
-    return _split_and_convert_to_torch(X_np, y_np, test_size, val_size, random_state, "covtype_sklearn")
+    return _split_and_convert_to_torch(X_np, y_np, test_size, init_size, random_state, "covtype_sklearn")
 
 
 def load_dataset_from_source(
-    dataset_name: str, test_size: float, val_size: float, random_state: int = 0, **kwargs
+    dataset_name: str, test_size: float, init_size: int, random_state: int = 0, **kwargs
 ) -> dict:
     """
     Loads a specified dataset.
     Returns a dictionary containing train/val/test datasets, param_dim, and counts.
     """
     dataset_name_lower = dataset_name.lower()
-    train_dataset, val_dataset, test_dataset, number_features = (None, None, None, None)
+    train_dataset, init_dataset, test_dataset, number_features = (None, None, None, None)
 
     # Map user-friendly names to the names required by sklearn.fetch_openml
     openml_name_map = {
-        "covtype": "covertype",
+        "covtype_openml": "covertype",
         "mushrooms": "mushroom",
         "adult": "adult",
         "phishing": "PhishingWebsites",
@@ -598,29 +602,35 @@ def load_dataset_from_source(
 
     if dataset_name_lower in openml_name_map:
         fetch_name = openml_name_map[dataset_name_lower]
-        train_dataset, val_dataset, test_dataset, number_features = load_openml_dataset(
+        train_dataset, init_dataset, test_dataset, number_features = load_openml_dataset(
             dataset_name=fetch_name,
             test_size=test_size,
-            val_size=val_size,
+            init_size=init_size,
             random_state=random_state,
         )
     elif dataset_name_lower == "mnist":
-        train_dataset, val_dataset, test_dataset, number_features = load_mnist_dataset(
-            test_size=test_size, val_size=val_size, random_state=random_state
+        train_dataset, init_dataset, test_dataset, number_features = load_mnist_dataset(
+            test_size=test_size, init_size=init_size, random_state=random_state
         )
-    elif dataset_name_lower == "covtype_sklearn":
-        train_dataset, val_dataset, test_dataset, number_features = load_covtype_dataset_sklearn(
-            test_size=test_size, val_size=val_size, random_state=random_state
+    elif dataset_name_lower == "covtype":
+        train_dataset, init_dataset, test_dataset, number_features = load_covtype_dataset_sklearn(
+            test_size=test_size, init_size=init_size, random_state=random_state
         )
     else:
         raise ValueError(f"Unknown dataset_name for loading: {dataset_name}")
 
+    # For real datasets, create the initialization_batch from the validation set.
+    initialization_batch = (None, None)
+    if init_dataset and len(init_dataset) > 0:
+        # The entire validation set is used as a single batch for initialization.
+        val_loader = torch.utils.data.DataLoader(init_dataset, batch_size=len(init_dataset))
+        initialization_batch = next(iter(val_loader))
+
     return {
         "train_dataset": train_dataset,
-        "val_dataset": val_dataset,
+        "initialization_batch": initialization_batch,
         "test_dataset": test_dataset,
         "number_features": number_features,
         "n_train": train_dataset.n_samples,
         "n_test": test_dataset.n_samples,
-        "n_val": val_dataset.n_samples,
     }

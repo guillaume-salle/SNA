@@ -12,6 +12,8 @@ from utils import (
     expand_file_patterns,
     run_visualizations,
     find_best_lr,
+    load_config,
+    process_config_values,
 )
 from run import run_experiment
 from datasets import load_dataset_from_source
@@ -96,41 +98,32 @@ def main():
     completion_log_data = completion_manager.get_log_data()
     runs_to_fetch = []
     missing_runs = []
+    all_p_configs = {}
 
     for p_path in problem_files:
         p_name = os.path.basename(p_path).replace(".yaml", "")
         print(f"\n{'='*30} Processing Problem: {p_name} {'='*30}")
-        p_config = load_and_process_config(p_path, {})
 
-        # --- Create Context for Optimizer Configs ---
-        dataset_params = p_config.get("dataset_params")
-        if not dataset_params:
-            raise ValueError(f"Problem config '{p_name}' is missing 'dataset_params' field.")
+        # --- Config Processing ---
+        # 1. Load the raw config first to find the param_dim.
+        raw_p_config = load_config(p_path)
+        dataset_params = raw_p_config.get("dataset_params", {})
 
-        param_dim: int | None = None
-        # Infer param_dim if not specified in the config
-        if "param_dim" in dataset_params:
-            param_dim = dataset_params["param_dim"]
-        elif "true_theta" in dataset_params:
-            param_dim = len(dataset_params["true_theta"])
-        else:
-            if "synthetic" in p_name:
+        # 2. Enforce that param_dim ('d') is explicitly defined.
+        param_dim = dataset_params.get("param_dim")
+        if param_dim is None:
+            if "synthetic" in p_name and "true_theta" in dataset_params:
+                param_dim = len(dataset_params["true_theta"])
+            else:
                 raise ValueError(
-                    f"Problem '{p_name}' is synthetic data, so param_dim or true_theta must be specified in the config."
+                    f"Configuration Error in '{p_path}': 'param_dim' must be explicitly "
+                    "defined in the 'dataset_params' section."
                 )
-            print(f"   Inferring param_dim for problem '{p_name}' by loading the dataset...")
-            dataset_name = p_config.get("dataset")
-            if not dataset_name:
-                raise ValueError(f"Problem config '{p_name}' is missing 'dataset' field.")
 
-            loaded_data = load_dataset_from_source(dataset_name=dataset_name, random_state=0, **dataset_params)
-            num_features = loaded_data["number_features"]
-            bias = p_config.get("model_params", {}).get("bias", False)
-            param_dim = num_features + 1 if bias else num_features
-            print(f"   Inferred param_dim = {param_dim}")
-
-        p_config["dataset_params"]["param_dim"] = param_dim
+        # 3. Create context and process the final config with expressions.
         context = {"d": param_dim, "n": dataset_params.get("n_dataset")}
+        p_config = process_config_values(raw_p_config, context)
+        all_p_configs[p_name] = p_config
 
         if args.find_lr:
             print(f"\n--- Running LR Finder for Problem '{p_name}' ---")
@@ -250,7 +243,7 @@ def main():
     # If we get here, all specified experiments are now complete.
     if args.visualize:
         print("\n--- All experiments are completed. Proceeding with visualization... ---")
-        run_visualizations(runs_to_fetch, problem_files, latex=args.latex, entity=WANDB_ENTITY)
+        run_visualizations(runs_to_fetch, problem_files, all_p_configs, latex=args.latex, entity=WANDB_ENTITY)
     elif args.check_runs:
         print("\n--- All experiments are completed. ---")
     else:

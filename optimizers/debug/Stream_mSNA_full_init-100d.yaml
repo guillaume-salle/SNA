@@ -1,0 +1,6 @@
+inherits_from: mSNA_base.yaml
+optimizer_params:
+  batch_size: "expr: d"
+  version: full
+  init_hess_inv_samples: "expr: 100*d" 
+  init_hess_inv_reg: 0.0
