@@ -1,6 +1,6 @@
 dataset: mnist
 dataset_params:
-  init_size: "expr: max(2*d, N_train/100)"
+  init_size: 0
   # test_size is passed to the loader but ignored by the underlying mnist function,
   # which uses a standard 80/20 split.
   test_size: 0.2
@@ -11,7 +11,7 @@ log_test_every_n_batches: 100
 log_train_every_n_batches: 100
 
 optimal_lr: "expr: float(5e-6)"
-init_theta: true
+init_theta: false
 
 model: logistic_regression
 model_params:

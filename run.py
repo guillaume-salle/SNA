@@ -7,10 +7,131 @@ from typing import Tuple
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
-from datasets import generate_regression, load_dataset_from_source
+from datasets import (
+    generate_regression,
+    load_dataset_from_source,
+    get_dataset_context_info,
+)
 from utils import evaluate_on_set, get_obj_function_class, get_optimizer_class
 from objective_functions import BaseObjectiveFunction
 from optimizers import BaseOptimizer, mSNA
+
+
+def setup_dataset(problem_config: dict, optimizer_config: dict, seed: int, obj_function: BaseObjectiveFunction) -> dict:
+    """
+    Sets up the dataset for the experiment, handling both synthetic and real data generation
+    and necessary initializations like Hessian estimation or initial batch creation.
+    """
+    # --- Extract Parameters ---
+    optimizer_params = optimizer_config.get("optimizer_params", {})
+    init_params = optimizer_config.get("init_params", {})
+    device = optimizer_params.get("device")
+    dataset_name = problem_config.get("dataset")
+    dataset_params = problem_config.get("dataset_params")
+    model_params = problem_config.get("model_params", {})
+    batch_size = optimizer_params["batch_size"]
+
+    # --- Initialize return values ---
+    train_set: torch.utils.data.Dataset
+    test_set: torch.utils.data.Dataset | None = None
+    initialization_batch: torch.Tensor | Tuple[torch.Tensor, torch.Tensor] | None = None
+    true_theta: torch.Tensor | None = None
+    true_hessian: torch.Tensor | None = None
+    param_dim: int
+
+    if "synthetic" in dataset_name:
+        data_gen_device = "cpu"  # Can be changed. Data is served on cpu anyway, like real datasets.
+        train_set, true_theta, true_hessian = generate_regression(
+            dataset_name=dataset_name,
+            dataset_params=dataset_params,
+            device=device,
+            data_batch_size=batch_size,
+            seed=seed,
+            data_gen_device=data_gen_device,
+        )
+        param_dim = true_theta.shape[0]
+        n_train_set = dataset_params.get("n_dataset")
+
+        if true_hessian is None and true_theta is not None:
+            print(f"   Estimating true_hessian for {dataset_name} at true_theta as no close formula was provided...")
+            n_samples_for_hessian_estimation = int(1e6)
+            hessian_estimation_batch_size = 2048
+            print(
+                f"   Using a temporary dataset of {n_samples_for_hessian_estimation:.0e} samples (batch size: {hessian_estimation_batch_size}) for this estimation."
+            )
+            dataset_params_hessian = dataset_params.copy()
+            dataset_params_hessian["n_dataset"] = n_samples_for_hessian_estimation
+            hessian_dataset, _, _ = generate_regression(
+                dataset_name=dataset_name,
+                dataset_params=dataset_params_hessian,
+                device=device,
+                data_batch_size=hessian_estimation_batch_size,
+                seed=seed,
+                data_gen_device=data_gen_device,
+            )
+            accumulated_hessian = torch.zeros((param_dim, param_dim), device=device, dtype=true_theta.dtype)
+            hessian_estimation_loader = DataLoader(
+                hessian_dataset,
+                batch_size=None,
+                shuffle=False,
+                pin_memory=(device == "cuda"),
+            )
+            number_of_batches = 0.0
+            for data_batch_cpu in hessian_estimation_loader:
+                current_batch_size = (
+                    data_batch_cpu[0].size(0) if isinstance(data_batch_cpu, (list, tuple)) else data_batch_cpu.size(0)
+                )
+                weight = (
+                    1
+                    if current_batch_size == hessian_estimation_batch_size
+                    else float(current_batch_size) / hessian_estimation_batch_size
+                )
+                data_on_device = (
+                    tuple(item.to(device, non_blocking=True) for item in data_batch_cpu)
+                    if isinstance(data_batch_cpu, (list, tuple))
+                    else data_batch_cpu.to(device, non_blocking=True)
+                )
+                batch_hess = obj_function.hessian(data_on_device, true_theta)
+                accumulated_hessian += batch_hess * weight
+                number_of_batches += weight
+            true_hessian = accumulated_hessian / number_of_batches
+            print(f"   Finished estimating true_hessian. Averaged over {number_of_batches} batches.")
+            del hessian_dataset, hessian_estimation_loader
+
+        if init_params.get("init_hess_inv", False):
+            initialization_batch_size = int(init_params.get("init_hess_inv_samples"))
+            print(f"   Initializing the optimizer matrix on a first batch of size {initialization_batch_size}")
+            dataset_params_init = dataset_params.copy()
+            dataset_params_init["n_dataset"] = initialization_batch_size
+            init_dataset, _, _ = generate_regression(
+                dataset_name=dataset_name,
+                dataset_params=dataset_params_init,
+                device=device,
+                data_batch_size=initialization_batch_size,
+                seed=seed,
+                data_gen_device=data_gen_device,
+            )
+            initialization_batch = next(iter(init_dataset))
+            del init_dataset
+    else:  # real dataset
+        true_theta, true_hessian = None, None
+        print(f"   Loading real dataset: {dataset_name}...")
+        loaded_data = load_dataset_from_source(dataset_name=dataset_name, random_state=seed, **dataset_params)
+        initialization_batch = loaded_data["initialization_batch"]
+        train_set = loaded_data["train_dataset"]
+        test_set = loaded_data["test_dataset"]
+        n_train_set = loaded_data["n_train"]
+        param_dim = loaded_data["number_features"] + 1 if model_params.get("bias") else loaded_data["number_features"]
+
+    return {
+        "train_set": train_set,
+        "test_set": test_set,
+        "initialization_batch": initialization_batch,
+        "param_dim": param_dim,
+        "n_train_set": n_train_set,
+        "true_theta": true_theta,
+        "true_hessian": true_hessian,
+    }
 
 
 def initialize_theta(
@@ -25,6 +146,10 @@ def initialize_theta(
     to find a better starting point (theta_init) for the main optimization.
     """
     NB_GD_STEPS = 100  # Fixed number of steps for now
+
+    if initialization_batch is None:
+        print("   [Initializer] Skipping GD initialization because the initialization dataset is empty.")
+        return
 
     # The batch size for the print statement can be inferred from the data
     batch_size = (
@@ -46,11 +171,11 @@ def initialize_theta(
     for step in range(NB_GD_STEPS):
         grad = obj_function.grad(initialization_batch_on_device, theta_init)
         theta_init.add_(grad, alpha=-gd_lr)
-        # Optional: Log the loss every 10 steps
-        if (step + 1) % 10 == 0:
-            with torch.no_grad():
-                loss = obj_function(initialization_batch_on_device, theta_init)
-                wandb.log({"initializer_loss": loss.item()})
+        # # Optional: Log the loss every 10 steps
+        # if (step + 1) % 10 == 0:
+        #     with torch.no_grad():
+        #         loss = obj_function(initialization_batch_on_device, theta_init)
+        #         wandb.log({"initializer_loss": loss.item()})
 
     print("   [Initializer] GD initialization complete.")
 
@@ -65,6 +190,33 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         optimizer_config (dict): The configuration dictionary for the optimizer.
         seed (int): The seed for the experiment.
     """
+    dataset_name = problem_config.get("dataset")
+
+    # --- Cap init_size for real datasets ---
+    if "synthetic" not in dataset_name:
+        dataset_params = problem_config.get("dataset_params")
+        original_init_size = int(dataset_params.get("init_size", 0))
+
+        if original_init_size > 0:
+            # We need n_train to cap, which requires loading the dataset info again.
+            # This is a trade-off for keeping this logic self-contained in run_experiment.
+            print("   [Config Adjust] Checking init_size cap for real dataset...")
+            context_info = get_dataset_context_info(dataset_name=dataset_name)
+            n_total = context_info["n_total"]
+            # The test_size in dataset_params should be a number by now.
+            test_size = dataset_params.get("test_size")
+            n_train_for_init_cap = round(n_total * (1 - test_size))
+
+            max_init_size = n_train_for_init_cap // 100
+            final_init_size = min(original_init_size, max_init_size)
+
+            if final_init_size != original_init_size:
+                print(
+                    f"   [Config Adjust] Capping init_size. Original: {original_init_size}, "
+                    f"Max Allowed (1% of train set): {max_init_size}, Final: {final_init_size}"
+                )
+                # Update the config in-place before it's used by setup_dataset
+                problem_config["dataset_params"]["init_size"] = final_init_size
 
     # Set the global seed for reproducibility
     torch.manual_seed(seed)
@@ -75,7 +227,6 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     device = optimizer_params.get("device")  # Defined in main
     radius = problem_config.get("radius")
     optimizer_name = optimizer_config.get("optimizer")
-    dataset_name = problem_config.get("dataset")
     dataset_params = problem_config.get("dataset_params")
     model_name = problem_config.get("model")
     model_params = problem_config.get("model_params")
@@ -87,136 +238,29 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
     obj_function = get_obj_function_class(model_name)(**model_params)
 
     # --- Setup: Data and param_dim---
-    train_set: torch.utils.data.Dataset
-    test_set: torch.utils.data.Dataset | None  # No test set for synthetic datasets
-    param_dim: int
-
+    data_setup = setup_dataset(problem_config, optimizer_config, seed, obj_function)
+    train_set = data_setup["train_set"]
+    test_set = data_setup["test_set"]
+    initialization_batch = data_setup["initialization_batch"]
+    param_dim = data_setup["param_dim"]
+    n_train_set = data_setup["n_train_set"]
+    true_theta = data_setup["true_theta"]
+    true_hessian = data_setup["true_hessian"]
     batch_size = optimizer_params["batch_size"]
-
-    if "synthetic" in dataset_name:  # Synthetic datasets are generated on the fly
-        # Define a device for the data generation process itself.
-        data_gen_device = device if "cuda" in str(device) else "cpu"
-
-        train_set, true_theta, true_hessian = generate_regression(
-            dataset_name=dataset_name,
-            dataset_params=dataset_params,
-            device=device,
-            data_batch_size=batch_size,
-            seed=seed,
-            data_gen_device=data_gen_device,
-        )
-        param_dim = true_theta.shape[0]
-        n_train_set = dataset_params.get("n_dataset")
-
-        if true_hessian is None and true_theta is not None:
-            print(f"   Estimating true_hessian for {dataset_name} at true_theta as no close formula was provided...")
-
-            n_samples_for_hessian_estimation = int(1e6)
-            hessian_estimation_batch_size = 2048  # Large batch size for efficiency
-
-            print(
-                f"   Using a temporary dataset of {n_samples_for_hessian_estimation:.0e} samples (batch size: {hessian_estimation_batch_size}) for this estimation."
-            )
-
-            # Create a temporary config for the Hessian dataset with the capped sample size
-            dataset_params_hessian = dataset_params.copy()
-            dataset_params_hessian["n_dataset"] = n_samples_for_hessian_estimation
-
-            # Create and seed a separate, identically-seeded dataset for Hessian estimation
-            hessian_dataset, _, _ = generate_regression(
-                dataset_name=dataset_name,
-                dataset_params=dataset_params_hessian,
-                device=device,
-                data_batch_size=hessian_estimation_batch_size,
-                seed=seed,
-                data_gen_device=data_gen_device,
-            )
-
-            accumulated_hessian = torch.zeros((param_dim, param_dim), device=device, dtype=true_theta.dtype)
-
-            hessian_estimation_loader = DataLoader(
-                hessian_dataset,
-                batch_size=None,  # Pass batches from dataset as-is
-                shuffle=False,
-                pin_memory=(device == "cuda"),
-            )
-
-            number_of_batches = 0.0
-            for data_batch_cpu in hessian_estimation_loader:
-                current_batch_size = (
-                    data_batch_cpu[0].size(0) if isinstance(data_batch_cpu, (list, tuple)) else data_batch_cpu.size(0)
-                )
-                if current_batch_size == hessian_estimation_batch_size:
-                    weight = 1
-                else:
-                    weight = float(current_batch_size) / hessian_estimation_batch_size
-
-                # Move data to the model device for the model's Hessian calculation
-                if isinstance(data_batch_cpu, (list, tuple)):
-                    data_on_device = tuple(item.to(device, non_blocking=True) for item in data_batch_cpu)
-                else:
-                    data_on_device = data_batch_cpu.to(device, non_blocking=True)
-
-                batch_hess = obj_function.hessian(data_on_device, true_theta)
-                accumulated_hessian += batch_hess * weight
-                number_of_batches += weight
-
-            true_hessian = accumulated_hessian / number_of_batches
-            print(f"   Finished estimating true_hessian. Averaged over {number_of_batches} batches.")
-            del hessian_dataset, hessian_estimation_loader
-
-        if init_params.get("init_hess_inv", False):
-            initialization_batch_size = int(init_params.get("init_hess_inv_samples"))
-            print(f"   Initializing the optimizer matrix on a first batch of size {initialization_batch_size}")
-
-            # Create a temporary config for the initialization dataset
-            dataset_params_init = dataset_params.copy()
-            dataset_params_init["n_dataset"] = initialization_batch_size
-
-            # Generate a dedicated dataset for Hessian initialization
-            init_dataset, _, _ = generate_regression(
-                dataset_name=dataset_name,
-                dataset_params=dataset_params_init,
-                device=device,
-                data_batch_size=initialization_batch_size,  # Generate as a single batch
-                seed=seed,  # Use the same seed for the initialization batch
-                data_gen_device=data_gen_device,
-            )
-
-            # Get the single batch of data from the dataset
-            initialization_batch = next(iter(init_dataset))
-            del init_dataset
-            print(f"   Finished generating initialization batch of size {initialization_batch[0].shape[0]}")
-
-    else:
-        true_theta, true_hessian = None, None
-
-        print(f"   Loading real dataset: {dataset_name}...")
-        loaded_data = load_dataset_from_source(dataset_name=dataset_name, random_state=seed, **dataset_params)
-        initialization_batch = loaded_data["initialization_batch"]
-        train_set = loaded_data["train_dataset"]
-        test_set = loaded_data["test_dataset"]
-        n_train_set = loaded_data["n_train"]
-
-        param_dim = loaded_data["number_features"] + 1 if model_params.get("bias") else loaded_data["number_features"]
     # --- End Setup: Data and param_dim ---
 
     # --- Define theta_init ---
     if "synthetic" in dataset_name:  # no theta initialization for synthetic datasets
-        print(f"Initializing theta_init on a sphere of radius {radius} around true_theta")
+        print(f"   Initializing theta_init on a sphere of radius {radius} around true_theta")
         random_direction = torch.randn_like(true_theta)
         random_direction /= torch.linalg.vector_norm(random_direction)
         theta_init = true_theta + radius * random_direction
     else:  # real dataset, initialize to zeros or with GD
         theta_init = torch.zeros(param_dim, device=device, dtype=torch.float32)
         if problem_config.get("init_theta", False):
-            # Also check if there is data to initialize on
-            if initialization_batch and initialization_batch[0] is not None:
-                initialize_theta(theta_init, initialization_batch, obj_function, optimal_lr, device=device)
-            else:
-                print("   [Initializer] Skipping GD initialization because the initialization dataset is empty.")
+            initialize_theta(theta_init, initialization_batch, obj_function, optimal_lr, device=device)
         else:
-            print(f"Initializing theta_init to zeros for real dataset (param_dim: {param_dim})")
+            print(f"   Initializing theta_init to zeros for real dataset (param_dim: {param_dim})")
 
     # --- Start timers ---
     start_time = time.time()
@@ -232,15 +276,14 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         optimizer_class = get_optimizer_class(optimizer_name)
         optimizer = optimizer_class(param=theta_init, obj_function=obj_function, **optimizer_params)
 
-        if init_params.get("init_hess_inv", False):
-            if initialization_batch and initialization_batch[0] is not None:
-                # Move the initialization batch to the correct device before using it.
-                init_data_on_device = tuple(item.to(device, non_blocking=True) for item in initialization_batch)
-                regularization = init_params.get("init_hess_inv_reg", BaseOptimizer.DEFAULT_REGULARIZATION)
-                optimizer.initialize_hessian(init_data_on_device, regularization=regularization)
-                del init_data_on_device
-            else:
-                print("   [Optimizer] Skipping Hessian initialization because the initialization dataset is empty.")
+        if init_params.get("init_hess_inv", False) and initialization_batch is not None:
+            # Move the initialization batch to the correct device before using it.
+            init_data_on_device = tuple(item.to(device, non_blocking=True) for item in initialization_batch)
+            regularization = init_params.get("init_hess_inv_reg", BaseOptimizer.DEFAULT_REGULARIZATION)
+            optimizer.initialize_hessian(init_data_on_device, regularization=regularization)
+            del init_data_on_device
+        else:
+            print("   [Optimizer] Skipping Hessian initialization because the initialization dataset is empty.")
 
         end_event.record()
         torch.cuda.synchronize()
@@ -251,15 +294,14 @@ def run_experiment(problem_config: dict, optimizer_config: dict, seed: int) -> N
         optimizer_class = get_optimizer_class(optimizer_name)
         optimizer = optimizer_class(param=theta_init, obj_function=obj_function, **optimizer_params)
 
-        if init_params.get("init_hess_inv", False):
-            if initialization_batch and initialization_batch[0] is not None:
-                # For CPU, .to(device) is a no-op, but we handle it as a tuple for consistency.
-                init_data_on_device = tuple(item.to(device) for item in initialization_batch)
-                regularization = init_params.get("init_hess_inv_reg", BaseOptimizer.DEFAULT_REGULARIZATION)
-                optimizer.initialize_hessian(init_data_on_device, regularization=regularization)
-                del init_data_on_device
-            else:
-                print("   [Optimizer] Skipping Hessian initialization because the initialization dataset is empty.")
+        if init_params.get("init_hess_inv", False) and initialization_batch is not None:
+            # For CPU, .to(device) is a no-op, but we handle it as a tuple for consistency.
+            init_data_on_device = tuple(item.to(device) for item in initialization_batch)
+            regularization = init_params.get("init_hess_inv_reg", BaseOptimizer.DEFAULT_REGULARIZATION)
+            optimizer.initialize_hessian(init_data_on_device, regularization=regularization)
+            del init_data_on_device
+        else:
+            print("   [Optimizer] Skipping Hessian initialization because the initialization dataset is empty.")
 
         optimizer_setup_end_time = time.perf_counter()
         optimizer_setup_duration = optimizer_setup_end_time - optimizer_setup_start_time

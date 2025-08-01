@@ -315,6 +315,25 @@ class RunCompletionManager:
             raise  # Re-raise the exception after logging
         self._completed_runs_cache = dict(completed_runs_by_project)
 
+    def get_completed_run(self, project_name: str, run_name: str) -> dict | None:
+        """
+        Gets the data for a specific completed run from the cache, ensuring the cache is loaded.
+
+        Args:
+            project_name: The project the run belongs to.
+            run_name: The unique descriptive identifier for the run.
+
+        Returns:
+            A dict with run data if found, otherwise None.
+        """
+        if self._completed_runs_cache is None:
+            self._read_log_file()
+            if self._completed_runs_cache is None:
+                return None  # Read failed
+
+        project_runs = self._completed_runs_cache.get(project_name, {})
+        return project_runs.get(run_name)
+
     def check_if_run_completed(self, expected_run_name: str) -> bool:
         """
         Checks if a run's descriptive name exists in the completion log cache.
@@ -429,6 +448,8 @@ def generate_dataset_characteristics_table(problem_configs: List[Dict[str, Any]]
     for p_config in problem_configs:
         dataset_name = p_config.get("dataset")
         dataset_params = p_config.get("dataset_params", {})
+        model_params = p_config.get("model_params", {})
+        bias = model_params.get("bias", False)
 
         # To get the exact train/test/init sizes, we need to load the dataset
         loaded_data = load_dataset_from_source(
@@ -438,6 +459,7 @@ def generate_dataset_characteristics_table(problem_configs: List[Dict[str, Any]]
         )
 
         n_features = loaded_data["number_features"]
+        param_dim = n_features + 1 if bias else n_features
         n_train = loaded_data["n_train"]
         n_test = loaded_data["n_test"]
         init_size = dataset_params.get("init_size", 0)
@@ -445,7 +467,7 @@ def generate_dataset_characteristics_table(problem_configs: List[Dict[str, Any]]
         table_data.append(
             {
                 "Dataset": dataset_name.capitalize(),
-                "Features": n_features,
+                "Dimension": param_dim,
                 "Training Set Size": n_train,
                 "Init Set Size": init_size,
                 "Testing Set Size": n_test,
@@ -465,9 +487,9 @@ def generate_dataset_characteristics_table(problem_configs: List[Dict[str, Any]]
 
     styler = df.style.format(
         {
-            "Features": comma_formatter,
+            "Dimension": comma_formatter,
             "Training Set Size": comma_formatter,
-            "Initialization Set Size": comma_formatter,
+            "Init Set Size": comma_formatter,
             "Testing Set Size": comma_formatter,
         }
     )
@@ -489,8 +511,9 @@ def generate_dataset_characteristics_table(problem_configs: List[Dict[str, Any]]
 
 def parse_local_run(local_dir: str, metrics_to_plot: List[str]) -> Dict | None:
     """
-    Parses summary and history files from a local wandb run directory.
-    It robustly fetches both final (scalar) metrics and time-series data.
+    Parses the summary file from a local wandb run directory.
+    It robustly fetches final (scalar) metrics needed for tables.
+    Time-series data for plots is fetched directly from the wandb API.
     """
     if not local_dir or not os.path.isdir(local_dir):
         print(f"Warning: local directory not found or invalid: {local_dir}")
@@ -503,48 +526,25 @@ def parse_local_run(local_dir: str, metrics_to_plot: List[str]) -> Dict | None:
         files_dir = os.path.join(local_dir, "files")
 
     summary_file = os.path.join(files_dir, "wandb-summary.json")
-    history_file = os.path.join(files_dir, "wandb-history.jsonl")
 
-    # 1. Parse the history file (.jsonl) to get time-series data and the last entry.
-    metric_history = {metric: [] for metric in metrics_to_plot}
-    last_history_item = {}
-    try:
-        with open(history_file, "r") as f:
-            for line in f:
-                try:
-                    history_item = json.loads(line)
-                    last_history_item = history_item  # Continuously update to get the last valid line
-                except json.JSONDecodeError:
-                    continue  # Skip corrupted lines
-
-                # For metrics that need a full plot, collect their history.
-                if "samples" in history_item:
-                    for metric in metrics_to_plot:
-                        if metric in history_item:
-                            metric_history[metric].append(
-                                {"samples": history_item["samples"], metric: history_item[metric]}
-                            )
-    except (FileNotFoundError, IOError):
-        print(f"Warning: History file not found in {files_dir}. Only final metrics will be available.")
-
-    # 2. Get final metric values. The summary file is the primary source.
+    # For table generation, we only need the final summary metrics.
     final_metrics = {}
-    try:
-        with open(summary_file, "r") as f:
-            final_metrics = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, IOError):
-        # If the summary file is missing or corrupt, use the last history line as a fallback.
-        final_metrics = last_history_item
-        if final_metrics:
-            print(f"Warning: Summary file not found in {files_dir}. Using last history line for final metrics.")
+    if os.path.exists(summary_file):
+        try:
+            with open(summary_file, "r") as f:
+                final_metrics = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            # If the summary file is corrupt or unreadable, we can't proceed.
+            print(f"Warning: Could not read or parse summary file in {files_dir}.")
+            return None
+    else:
+        # If there's no summary file, we can't get the data for the table.
+        print(f"Warning: Summary file not found in {files_dir}.")
+        return None
 
-    # 3. Assemble the final run_data dictionary.
-    # Start with the final metrics.
-    run_data: Dict[str, Any] = {**final_metrics}
-    # Add the history data under the "history" key.
-    run_data["history"] = {metric: data for metric, data in metric_history.items() if data}
-
-    return run_data
+    # For compatibility, we return a dictionary with an empty history key.
+    final_metrics["history"] = {}
+    return final_metrics
 
 
 def format_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -702,22 +702,63 @@ def _generate_latex_table(df: pd.DataFrame):
     """
     Helper function to generate a publication-quality LaTeX table from DataFrame.
     """
-    # Rename optimizers first for cleaner, more readable names in the table
-    optimizer_rename = {
-        "Stream_SGD": "SGD",
-        "Stream_SGD_Avg": "SGD-Avg",
-        "Stream_mSNA": "mSNA",
-        "Stream_mSNA_Avg": "mSNA-Avg",
-        "Stream_mSNA_ell-0,25": "mSNA (l=0.25)",
-        "Stream_mSNA_ell-0,5": "mSNA (l=0.5)",
-        "Stream_mSNA_init_hess-10d": "mSNA",
-        "Stream_mSNA_Avg_init_hess-10d": "mSNA-Avg",
-    }
-    df["Optimizer"] = df["Optimizer"].replace(optimizer_rename)
+
+    def generate_display_name(o_name: str) -> str:
+        """Dynamically creates a display name from the optimizer's filename."""
+        parts = o_name.split("_")
+        display_parts = []
+
+        # Find base name (SGD, mSNA, etc.)
+        if "SGD" in o_name:
+            base = "SGD"
+            if "Avg" in parts:
+                base += "-Avg"
+        elif "mSNA" in o_name:
+            base = "mSNA"
+            if "Avg" in parts:
+                base += "-Avg"
+        else:
+            return o_name  # Fallback for unknown optimizer types
+
+        display_parts.append(base)
+
+        # Add details like (l=0.5, init)
+        details = []
+        for part in parts:
+            if part.startswith("ell-"):
+                val = part.split("-")[1].replace(",", ".")
+                details.append(f"$\\ell={val}$")
+
+        # Check for initialization separately, as it's a distinct part of the name
+        if "init" in parts:
+            details.append("init")
+
+        if details:
+            display_parts.append(f"({', '.join(sorted(details))})")
+
+        return " ".join(display_parts)
+
+    # --- Apply dynamic renaming ---
+    df["Optimizer"] = df["Optimizer"].apply(generate_display_name)
+
+    # --- Set a canonical order for the legend and table ---
+    # We build this order dynamically based on the optimizers present in the data
+    all_optimizers = df["Optimizer"].unique()
+    order = sorted(
+        all_optimizers,
+        key=lambda name: (
+            "SGD" not in name,  # SGD optimizers first
+            "mSNA" not in name,  # then mSNA
+            "Avg" not in name,  # Non-averaged first
+            name,  # Alphabetical as a tie-breaker
+        ),
+    )
+    df["Optimizer"] = pd.Categorical(df["Optimizer"], categories=order, ordered=True)
+    df.sort_values(["Dataset", "Optimizer"], inplace=True)
 
     # **IMPORTANT**: Escape LaTeX special characters AFTER renaming.
     # This ensures that underscores in original names don't prevent remapping.
-    df["Optimizer"] = df["Optimizer"].str.replace("_", r"\_", regex=False)
+    df["Optimizer"] = df["Optimizer"].astype(str).str.replace("_", r"\_", regex=False)
     df["Dataset"] = df["Dataset"].str.replace("_", r"\_", regex=False)
 
     # Set up the multi-index which is key for grouping and multirow
@@ -1195,7 +1236,7 @@ def find_best_lr(problem_config: Dict, seed: int):
         except ValueError:  # This happens if all losses are NaN
             print(f"Warning: All losses were NaN for {num_steps} steps. Could not find a best LR.")
 
-    # Find the overall minimum loss to set the y-axis scale appropriately
+    # Find the overall minimum loss to set the y-limit to zoom in on the interesting part of the plot
     all_finite_losses = [loss for losses in all_losses.values() for loss in losses if np.isfinite(loss)]
     if all_finite_losses:
         global_min_loss = min(all_finite_losses)

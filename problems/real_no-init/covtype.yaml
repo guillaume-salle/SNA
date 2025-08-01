@@ -1,6 +1,6 @@
 dataset: covtype
 dataset_params:
-  init_size: "expr: max(2*d, N_train/100)"
+  init_size: 0
   test_size: 0.2
   param_dim: 55
   n_dataset: 581012
@@ -9,9 +9,9 @@ log_test_every_n_batches: 100
 log_train_every_n_batches: 100
 
 optimal_lr: "expr: float(1e-7)"
-init_theta: true
+init_theta: false
 
 model: logistic_regression
 model_params:
   bias: true
-  lambda_: "expr: 1 / N_train"
+  lambda_: "expr: 1/n"

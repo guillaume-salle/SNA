@@ -3,6 +3,8 @@ import wandb
 import traceback
 import hashlib
 import argparse
+from typing import Any
+import copy
 
 from utils import (
     RunCompletionManager,
@@ -16,7 +18,7 @@ from utils import (
     process_config_values,
 )
 from run import run_experiment
-from datasets import load_dataset_from_source
+from datasets import get_dataset_context_info
 
 
 # Specify the WandB entity to use for logging.
@@ -95,7 +97,6 @@ def main():
 
     # --- Set up completion manager ---
     completion_manager = RunCompletionManager()
-    completion_log_data = completion_manager.get_log_data()
     runs_to_fetch = []
     missing_runs = []
     all_p_configs = {}
@@ -105,23 +106,41 @@ def main():
         print(f"\n{'='*30} Processing Problem: {p_name} {'='*30}")
 
         # --- Config Processing ---
-        # 1. Load the raw config first to find the param_dim.
+        # 1. Load the raw config first to get basic parameters.
         raw_p_config = load_config(p_path)
         dataset_params = raw_p_config.get("dataset_params", {})
 
-        # 2. Enforce that param_dim ('d') is explicitly defined.
-        param_dim = dataset_params.get("param_dim")
-        if param_dim is None:
-            if "synthetic" in p_name and "true_theta" in dataset_params:
-                param_dim = len(dataset_params["true_theta"])
-            else:
-                raise ValueError(
-                    f"Configuration Error in '{p_path}': 'param_dim' must be explicitly "
-                    "defined in the 'dataset_params' section."
-                )
+        # 2. Determine context variables (d and n) based on dataset type.
+        context: dict[str, Any]
+        if "synthetic" in p_name:
+            param_dim = dataset_params.get("param_dim")
+            if param_dim is None:
+                if "true_theta" in dataset_params:
+                    param_dim = len(dataset_params["true_theta"])
+                else:
+                    raise ValueError(f"Synthetic problem '{p_name}' must define 'param_dim' or 'true_theta'.")
 
-        # 3. Create context and process the final config with expressions.
-        context = {"d": param_dim, "n": dataset_params.get("n_dataset")}
+            N_train = dataset_params.get("n_dataset")
+            if N_train is None:
+                raise ValueError(f"Synthetic problem '{p_name}' must define 'n_dataset'.")
+
+            context = {"d": param_dim, "N_train": N_train}
+            print(f"   Context for synthetic problem set: d={param_dim}, N_train={N_train}")
+        else:  # Real dataset
+            param_dim = dataset_params.get("param_dim")
+            if param_dim is None:
+                raise ValueError(f"Real problem '{p_name}' must define 'param_dim'.")
+            n_total = dataset_params.get("n_dataset")
+            if n_total is None:
+                raise ValueError(f"Real problem '{p_name}' must define 'n_total'.")
+            test_size = dataset_params.get("test_size")
+            if test_size is None:
+                raise ValueError(f"Real problem '{p_name}' must define 'test_size'.")
+            N_train = round(n_total * (1 - test_size))
+            context = {"d": param_dim, "N_train": N_train}
+            print(f"   Final context set: d={param_dim}, N_train={N_train} (train+init set size)")
+
+        # 3. Process the final problem config with the now-defined context.
         p_config = process_config_values(raw_p_config, context)
         all_p_configs[p_name] = p_config
 
@@ -138,13 +157,15 @@ def main():
                 seed = i
 
                 # --- Create unique run ID and check for completion ---
-                current_run_config = {**p_config, **o_config, "seed": seed}
-                completion_id_stable_string = config_to_stable_string(current_run_config)
+                # Include the optimizer name in the hash to distinguish between configs
+                # that might resolve to the same dictionary but originate from different files.
+                current_run_config_for_hash = {**p_config, **o_config, "seed": seed, "optimizer_name": o_name}
+                completion_id_stable_string = config_to_stable_string(current_run_config_for_hash)
                 completion_id_hash = hashlib.md5(completion_id_stable_string.encode()).hexdigest()[:8]
                 sanitized_o_name = sanitize_for_wandb(o_name)
                 unique_run_id = f"{sanitized_o_name}_{completion_id_hash}_{seed}"
 
-                completed_run_data = completion_log_data.get(p_name, {}).get(unique_run_id)
+                completed_run_data = completion_manager.get_completed_run(p_name, unique_run_id)
 
                 if completed_run_data and completed_run_data.get("local_dir") and not args.rerun:
                     # Run is complete and has a valid local directory
@@ -186,17 +207,24 @@ def main():
 
                     print(f"--- Starting run: {wandb_run_name} (Project: {sanitized_p_name}, Group: {group_name}) ---")
 
+                    # Use the original config for wandb, without the extra key
+                    current_run_config_for_wandb = {**p_config, **o_config, "seed": seed}
                     wandb_run = wandb.init(
                         entity=entity_to_use,
                         project=sanitized_p_name,
-                        config=current_run_config,
+                        config=current_run_config_for_wandb,
                         group=group_name,
                         name=wandb_run_name,
                         mode="offline" if args.offline else "online",
                     )
                     actual_wandb_id = wandb_run.id
                     local_dir = wandb_run.dir
-                    run_experiment(p_config, o_config, seed=i)
+                    # Pass deepcopies of the configs to prevent mutation across loops
+                    run_experiment(
+                        copy.deepcopy(p_config),
+                        copy.deepcopy(o_config),
+                        seed=i,
+                    )
 
                     success = True
                     completion_manager.log_run_completion(unique_run_id, actual_wandb_id, local_dir, p_name)
@@ -220,7 +248,6 @@ def main():
                     if wandb_run is not None:
                         # Force a save of the run's data before finishing.
                         # This can help ensure data is written, especially in offline mode.
-                        wandb_run.save()
                         exit_code = 0 if success else 1
                         wandb.finish(exit_code=exit_code)
                         print(f"--- WandB run finished for {o_name} (Exit code: {exit_code}) ---")

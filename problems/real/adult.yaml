@@ -1,17 +1,17 @@
 dataset: adult
 dataset_params:
-  init_size: "expr: 2*d"
-  test_size: 0.33 # Standard split for adult dataset
-  param_dim: 106
+  init_size: "expr: max(2*d, N_train/100)"
+  test_size: 0.2
+  param_dim: 98
   n_dataset: 48842
 
 log_test_every_n_batches: 10
 log_train_every_n_batches: 10
 
-init_theta: true
 optimal_lr: "expr: float(1e-10)"
+init_theta: true
 
 model: logistic_regression
 model_params:
   bias: true
-  lambda_: 1e-4 
+  lambda_: "expr: 1 / N_train"

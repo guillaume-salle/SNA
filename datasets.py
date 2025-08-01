@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import Dataset, IterableDataset
-from typing import Generator, Tuple, Optional
+from typing import Generator, Tuple, Optional, Dict, Any
 import math
 from sklearn.datasets import fetch_covtype, fetch_openml
 from sklearn.model_selection import train_test_split
@@ -388,12 +388,14 @@ def _split_and_convert_to_torch(
     init_size: int,
     random_state: int,
     dataset_name: str,
-) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
+    verbose: bool = False,
+) -> Dict[str, Any]:
     """
-    Splits numpy arrays into train, initialization, and test sets and converts them to MyDataset objects.
+    Splits numpy arrays and returns a dictionary of datasets and their info.
     This function contains the common logic for data splitting and tensor conversion.
     """
-    print(f"Total dataset size: {len(X_np)} samples.")
+    if verbose:
+        print(f"Total dataset size: {len(X_np)} samples.")
     # Split data into training+initialization and test sets
     stratify_np = y_np if np.unique(y_np).size > 1 and np.min(np.bincount(y_np.astype(int))) > 1 else None
     X_non_test_np, X_test_np, y_non_test_np, y_test_np = train_test_split(
@@ -435,47 +437,52 @@ def _split_and_convert_to_torch(
     Y_test = torch.tensor(y_test_np, dtype=torch.float32, device="cpu").squeeze()
 
     number_features = X_train.shape[1] if X_train.shape[0] > 0 else X_np.shape[1]
-    print(f"Finished splitting and converting {dataset_name} dataset.")
-    print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train.shape}")
-    print(f"  Initialization X shape: {X_init.shape}, Initialization Y shape: {Y_init.shape}")
-    print(f"  Testing X shape: {X_test.shape}, Testing Y shape: {Y_test.shape}")
-    print(f"  Number of features from data: {number_features}")
+    if verbose:
+        print(f"Finished splitting and converting {dataset_name} dataset.")
+        print(f"  Training X shape: {X_train.shape}, Training Y shape: {Y_train.shape}")
+        print(f"  Initialization X shape: {X_init.shape}, Initialization Y shape: {Y_init.shape}")
+        print(f"  Testing X shape: {X_test.shape}, Testing Y shape: {Y_test.shape}")
+        print(f"  Number of features from data: {number_features}")
 
-    return (
-        MyDataset(X_train, Y_train),
-        MyDataset(X_init, Y_init),
-        MyDataset(X_test, Y_test),
-        number_features,
-    )
+    return {
+        "train_dataset": MyDataset(X_train, Y_train),
+        "init_dataset": MyDataset(X_init, Y_init),
+        "test_dataset": MyDataset(X_test, Y_test),
+        "number_features": number_features,
+        "n_total": X_np.shape[0],
+    }
 
 
-def load_openml_dataset(
-    dataset_name: str, test_size: float, init_size: int, random_state: int
-) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
+def _fetch_and_process_openml(dataset_name: str, verbose: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Fetch a dataset from OpenML using scikit-learn's fetch_openml.
-    It uses as_frame='auto' to handle both dense and sparse datasets.
+    Fetches and processes a dataset from OpenML, returning numpy arrays.
     """
-    print(f"Loading and processing {dataset_name} dataset via sklearn.fetch_openml...")
+    if verbose:
+        print(f"Fetching raw data for {dataset_name} from OpenML...")
 
     version_to_fetch = "active"
     if dataset_name == "adult":
-        print("  Note: Using version 2 of adult dataset.")
+        if verbose:
+            print("  Note: Using version 2 of adult dataset.")
         version_to_fetch = 2
     elif dataset_name == "connect-4":
-        print("  Note: Using version 2 of connect-4 dataset.")
+        if verbose:
+            print("  Note: Using version 2 of connect-4 dataset.")
         version_to_fetch = 2
     elif dataset_name == "mushroom":
-        print("  Note: Using version 1 of mushroom dataset.")
+        if verbose:
+            print("  Note: Using version 1 of mushroom dataset.")
         version_to_fetch = 1
     elif dataset_name == "PhishingWebsites":
-        print("  Note: Using version 2 of PhishingWebsites dataset.")
+        if verbose:
+            print("  Note: Using version 1 of PhishingWebsites dataset.")
         version_to_fetch = 1
 
     start_time = time.time()
     bunch = fetch_openml(name=dataset_name, as_frame="auto", parser="auto", version=version_to_fetch)
     duration = time.time() - start_time
-    print(f"  Fetching data took {duration:.2f} seconds.")
+    if verbose:
+        print(f"  Fetching data took {duration:.2f} seconds.")
 
     X, y = bunch.data, bunch.target
 
@@ -483,7 +490,8 @@ def load_openml_dataset(
     y_np: np.ndarray
 
     if isinstance(X, pd.DataFrame):
-        print("  Info: Dataset loaded as a pandas DataFrame.")
+        if verbose:
+            print("  Info: Dataset loaded as a pandas DataFrame.")
         # Identify categorical features to one-hot encode them
         categorical_cols = X.select_dtypes(include=["category", "object"]).columns
         if not categorical_cols.empty:
@@ -494,10 +502,12 @@ def load_openml_dataset(
                 try:
                     X[col] = X[col].astype(float).astype(np.float32)
                 except ValueError:
-                    print(f"  Warning: Could not convert column '{col}' to float.")
+                    if verbose:
+                        print(f"  Warning: Could not convert column '{col}' to float.")
         X_np = X.to_numpy(dtype=np.float32)
     else:
-        print("  Info: Dataset loaded as a numpy/scipy array (likely sparse).")
+        if verbose:
+            print("  Info: Dataset loaded as a numpy/scipy array (likely sparse).")
         # Handle sparse matrix case
         if hasattr(X, "toarray"):
             X_np = X.toarray()
@@ -510,39 +520,40 @@ def load_openml_dataset(
     y_categorical = y_series.astype("category")
     num_classes = len(y_categorical.cat.categories)
 
-    print(f"  Info: Original unique labels found: {y_categorical.cat.categories.to_list()}")
+    if verbose:
+        print(f"  Info: Original unique labels found: {y_categorical.cat.categories.to_list()}")
 
     if num_classes > 2:
-        print(
-            f"  Info: Dataset '{dataset_name}' has {num_classes} classes. "
-            "Converting to binary by mapping the most frequent class to 1 and others to 0."
-        )
+        if verbose:
+            print(
+                f"  Info: Dataset '{dataset_name}' has {num_classes} classes. "
+                "Converting to binary by mapping the most frequent class to 1 and others to 0."
+            )
         major_class_label = y_categorical.value_counts().idxmax()
-        print(f"  Info: Most frequent class is '{major_class_label}'.")
+        if verbose:
+            print(f"  Info: Most frequent class is '{major_class_label}'.")
         y_np = (y_series == major_class_label).to_numpy(dtype=np.float32)
-        print(f"  Info: New unique labels: {np.unique(y_np).tolist()}")
+        if verbose:
+            print(f"  Info: New unique labels: {np.unique(y_np).tolist()}")
     elif num_classes == 2:
         # cat.codes will map the two classes to {0, 1}
         y_np = y_categorical.cat.codes.to_numpy(dtype=np.float32)
-        print("  Info: Labels successfully mapped to {0, 1}.")
+        if verbose:
+            print("  Info: Labels successfully mapped to {0, 1}.")
     else:  # num_classes < 2
         raise ValueError(
             f"Dataset '{dataset_name}' has fewer than 2 classes, which is not supported. "
             f"Found {num_classes} classes: {y_categorical.cat.categories.to_list()}"
         )
+    return X_np, y_np
 
-    return _split_and_convert_to_torch(X_np, y_np, test_size, init_size, random_state, dataset_name)
 
-
-def load_mnist_dataset(
-    test_size: float, init_size: int, random_state: int
-) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
+def _fetch_and_process_mnist(verbose: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Load and process the MNIST dataset for binary classification of even vs. odd digits.
-    Even digits {0, 2, 4, 6, 8} are mapped to class 0.
-    Odd digits {1, 3, 5, 7, 9} are mapped to class 1.
+    Fetches and processes the MNIST dataset, returning numpy arrays.
     """
-    print("Loading and processing MNIST dataset (Even vs. Odd)...")
+    if verbose:
+        print("Fetching raw data for MNIST (Even vs. Odd)...")
     # Load raw data
     train_data = tv_datasets.MNIST(root="data", train=True, download=True, transform=ToTensor())
     test_data = tv_datasets.MNIST(root="data", train=False, download=True, transform=ToTensor())
@@ -557,38 +568,58 @@ def load_mnist_dataset(
     # Flatten images and convert to numpy
     X_np = X_combined.reshape(X_combined.shape[0], -1).numpy()
     y_np = y_binary.numpy()
+    return X_np, y_np
 
-    return _split_and_convert_to_torch(X_np, y_np, test_size, init_size, random_state, "MNIST")
 
-
-def load_covtype_dataset_sklearn(
-    test_size: float, init_size: int, random_state: int
-) -> Tuple[MyDataset, MyDataset, MyDataset, int]:
+def _fetch_and_process_covtype(verbose: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Load and process the covtype dataset from sklearn.
-    The task is converted to a binary classification problem: class 2 vs. all others.
+    Fetches and processes the covtype dataset from sklearn, returning numpy arrays.
     """
-    print("Loading and processing covtype dataset from sklearn...")
+    if verbose:
+        print("Fetching raw data for covtype from sklearn...")
     X, y = fetch_covtype(return_X_y=True)
-
     # Convert to binary classification: class 2 (Lodgepole Pine) vs all others.
     y_binary = (y == 2).astype(np.float32)
-
     X_np = X.astype(np.float32)
     y_np = y_binary
+    return X_np, y_np
 
-    return _split_and_convert_to_torch(X_np, y_np, test_size, init_size, random_state, "covtype_sklearn")
+
+def get_dataset_context_info(dataset_name: str, verbose: bool = False) -> Dict[str, int]:
+    """
+    Fetches raw data for a dataset and returns its essential characteristics
+    (number of features and total samples) needed for config evaluation context.
+    """
+    dataset_name_lower = dataset_name.lower()
+    openml_name_map = {
+        "covtype_openml": "covertype",
+        "mushrooms": "mushroom",
+        "adult": "adult",
+        "phishing": "PhishingWebsites",
+        "connect-4": "connect-4",
+        "gisette": "gisette",
+    }
+    if dataset_name_lower in openml_name_map:
+        X_np, _ = _fetch_and_process_openml(openml_name_map[dataset_name_lower], verbose=verbose)
+    elif dataset_name_lower == "mnist":
+        X_np, _ = _fetch_and_process_mnist(verbose=verbose)
+    elif dataset_name_lower == "covtype":
+        X_np, _ = _fetch_and_process_covtype(verbose=verbose)
+    else:
+        raise ValueError(f"Unknown dataset_name for getting context info: {dataset_name}")
+
+    return {"number_features": X_np.shape[1], "n_total": X_np.shape[0]}
 
 
 def load_dataset_from_source(
-    dataset_name: str, test_size: float, init_size: int, random_state: int = 0, **kwargs
+    dataset_name: str, test_size: float = 0.2, init_size: int = 0, random_state: int = 0, **kwargs
 ) -> dict:
     """
-    Loads a specified dataset.
-    Returns a dictionary containing train/val/test datasets, param_dim, and counts.
+    Loads a specified dataset by fetching, processing, and splitting it.
+    Returns a dictionary containing train/init/test datasets and their properties.
     """
     dataset_name_lower = dataset_name.lower()
-    train_dataset, init_dataset, test_dataset, number_features = (None, None, None, None)
+    verbose = kwargs.get("verbose", False)
 
     # Map user-friendly names to the names required by sklearn.fetch_openml
     openml_name_map = {
@@ -601,36 +632,33 @@ def load_dataset_from_source(
     }
 
     if dataset_name_lower in openml_name_map:
-        fetch_name = openml_name_map[dataset_name_lower]
-        train_dataset, init_dataset, test_dataset, number_features = load_openml_dataset(
-            dataset_name=fetch_name,
-            test_size=test_size,
-            init_size=init_size,
-            random_state=random_state,
-        )
+        X_np, y_np = _fetch_and_process_openml(openml_name_map[dataset_name_lower], verbose=verbose)
     elif dataset_name_lower == "mnist":
-        train_dataset, init_dataset, test_dataset, number_features = load_mnist_dataset(
-            test_size=test_size, init_size=init_size, random_state=random_state
-        )
+        X_np, y_np = _fetch_and_process_mnist(verbose=verbose)
     elif dataset_name_lower == "covtype":
-        train_dataset, init_dataset, test_dataset, number_features = load_covtype_dataset_sklearn(
-            test_size=test_size, init_size=init_size, random_state=random_state
-        )
+        X_np, y_np = _fetch_and_process_covtype(verbose=verbose)
     else:
         raise ValueError(f"Unknown dataset_name for loading: {dataset_name}")
 
-    # For real datasets, create the initialization_batch from the validation set.
-    initialization_batch = (None, None)
+    # Step 2: Split the numpy data and convert to PyTorch Datasets
+    data_dict = _split_and_convert_to_torch(
+        X_np, y_np, test_size, init_size, random_state, dataset_name_lower, verbose=verbose
+    )
+
+    # Step 3: Create the initialization_batch from the init_dataset
+    initialization_batch = None
+    init_dataset = data_dict["init_dataset"]
     if init_dataset and len(init_dataset) > 0:
-        # The entire validation set is used as a single batch for initialization.
         val_loader = torch.utils.data.DataLoader(init_dataset, batch_size=len(init_dataset))
         initialization_batch = next(iter(val_loader))
 
+    # Step 4: Assemble the final dictionary to return
     return {
-        "train_dataset": train_dataset,
+        "train_dataset": data_dict["train_dataset"],
         "initialization_batch": initialization_batch,
-        "test_dataset": test_dataset,
-        "number_features": number_features,
-        "n_train": train_dataset.n_samples,
-        "n_test": test_dataset.n_samples,
+        "test_dataset": data_dict["test_dataset"],
+        "number_features": data_dict["number_features"],
+        "n_train": data_dict["train_dataset"].n_samples,
+        "n_test": data_dict["test_dataset"].n_samples,
+        "n_total": data_dict["n_total"],
     }

@@ -3,7 +3,7 @@ dataset_params:
   init_size: "expr: 2*d"
   test_size: 0.33 # Standard split for adult dataset
   param_dim: 106
-  n_dataset: 11055
+  n_dataset: 48842
 
 log_test_every_n_batches: 10
 log_train_every_n_batches: 10

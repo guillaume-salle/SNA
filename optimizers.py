@@ -3,9 +3,6 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 import math
 from objective_functions import BaseObjectiveFunction
-import traceback
-from torch.utils.data import DataLoader
-import wandb
 
 
 class BaseOptimizer(ABC):
@@ -22,7 +19,7 @@ class BaseOptimizer(ABC):
 
     DEFAULT_LOG_WEIGHT = 2.0
     DEFAULT_AVERAGED = False
-    DEFAULT_REGULARIZATION = 1e-4  # For the Hessian inversion
+    DEFAULT_REGULARIZATION = 1e-3  # For the Hessian inversion
 
     def __init__(
         self,
@@ -264,10 +261,6 @@ class mSNA(BaseOptimizer):
             initialization_set: The data to compute the Hessian on.
             regularization (float): Regularization parameter for the Hessian inversion.
         """
-        if initialization_set[0].shape[0] == 0:
-            print("   [mSNA] Warning: Initialization set is empty. Skipping Hessian initialization.")
-            return
-
         print("   [mSNA] Initializing matrix with inverse Hessian estimate via direct computation...")
         # Compute Hessian at the current parameter (theta_init)
         avg_hessian = self.obj_function.hessian(initialization_set, self.param)
@@ -284,11 +277,11 @@ class mSNA(BaseOptimizer):
 
         print(f"   [mSNA] Successfully initialized matrix.")
 
-        # Optional: Print the eigenvalues of the initial matrix
-        eigenvalues = torch.linalg.eigvalsh(self.matrix)
-        print(
-            f"   [mSNA] Initial matrix condition number: {eigenvalues.max()/eigenvalues.min():.2e} (min={eigenvalues.min():.4f}, max={eigenvalues.max():.4f})"
-        )
+        # # Optional: Print the eigenvalues of the initial matrix
+        # eigenvalues = torch.linalg.eigvalsh(self.matrix)
+        # print(
+        #     f"   [mSNA] Initial matrix condition number: {eigenvalues.max()/eigenvalues.min():.2e} (min={eigenvalues.min():.4f}, max={eigenvalues.max():.4f})"
+        # )
 
     def step(
         self,
@@ -610,10 +603,6 @@ class SNA(BaseOptimizer):
             initialization_set: The data to compute the Hessian on.
             regularization: Regularization parameter for the Hessian inversion.
         """
-        if initialization_set[0].shape[0] == 0:
-            print("   [SNA] Warning: Initialization set is empty. Skipping Hessian initialization.")
-            return
-
         print("   [SNA] Initializing matrix with inverse Hessian estimate via direct computation...")
         # Compute Hessian at the current parameter (theta_init)
         avg_hessian = self.obj_function.hessian(initialization_set, self.param)
