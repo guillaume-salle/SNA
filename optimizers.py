@@ -328,7 +328,7 @@ class mSNA(BaseOptimizer):
         include_lr_squared_term = "USNA" not in self.version
 
         if self.compute_hessian_param_avg:
-            hessian = self.obj_function.hessian(data, self.param)
+            hessian = self.obj_function.hessian(data, self.param, return_grad=False)
             grad = self.obj_function.grad(data, self.param_not_avg)
         else:
             hessian, grad = self.obj_function.hessian(data, self.param_not_avg, return_grad=True)
@@ -370,16 +370,15 @@ class mSNA(BaseOptimizer):
 
         if self.mask_size == 1:
             # --- Optimized path for mask_size = 1 ---
-            mask = torch.randint(low=0, high=self.dim, size=(1,), device=self.device).item()
+            mask_t = torch.randint(low=0, high=self.dim, size=(1,), device=self.device, dtype=torch.int64)
+            mask: int = int(mask_t.item())
 
             if self.compute_hessian_param_avg:
-                hessian_column = self.obj_function.hessian_column(
-                    data, self.param, torch.tensor([mask], device=self.device)
-                ).squeeze()
+                hessian_column = self.obj_function.hessian_column(data, self.param, mask_t, return_grad=False).squeeze()
                 grad = self.obj_function.grad(data, self.param_not_avg)
             else:
                 hessian_column, grad = self.obj_function.hessian_column(
-                    data, self.param_not_avg, torch.tensor([mask], device=self.device), return_grad=True
+                    data, self.param_not_avg, mask_t, return_grad=True
                 )
                 hessian_column = hessian_column.squeeze()
 
@@ -417,7 +416,7 @@ class mSNA(BaseOptimizer):
             masks = shuffled_indices[: self.mask_size]
 
             if self.compute_hessian_param_avg:
-                hessian_columns = self.obj_function.hessian_column(data, self.param, masks)
+                hessian_columns = self.obj_function.hessian_column(data, self.param, masks, return_grad=False)
                 grad = self.obj_function.grad(data, self.param_not_avg)
             else:
                 hessian_columns, grad = self.obj_function.hessian_column(
@@ -504,7 +503,7 @@ class mSNA(BaseOptimizer):
             raise ValueError(f"Invalid version for update_hessian_vector: {self.version}")
 
         if self.compute_hessian_param_avg:
-            hessian_V = self.obj_function.hessian_vector(data, self.param, vector_V)
+            hessian_V = self.obj_function.hessian_vector(data, self.param, vector_V, return_grad=False)
             grad = self.obj_function.grad(data, self.param_not_avg)
         else:
             hessian_V, grad = self.obj_function.hessian_vector(data, self.param_not_avg, vector_V, return_grad=True)
@@ -605,8 +604,14 @@ class SNA(BaseOptimizer):
         """
         print("   [SNA] Initializing matrix with inverse Hessian estimate via direct computation...")
         # Compute Hessian at the current parameter (theta_init)
-        avg_hessian = self.obj_function.hessian(initialization_set, self.param)
-        weight = initialization_set.shape[0] / self.batch_size
+        avg_hessian = self.obj_function.hessian(initialization_set, self.param, return_grad=False)
+
+        if isinstance(initialization_set, tuple):
+            n_samples = initialization_set[0].shape[0]
+        else:
+            n_samples = initialization_set.shape[0]
+
+        weight = n_samples / self.batch_size
         self.hessian_bar.copy_(
             weight * avg_hessian
             + (self.init_id_weight / self.batch_size) * torch.eye(self.dim, device=self.device, dtype=self.param.dtype)
@@ -657,7 +662,7 @@ class SNA(BaseOptimizer):
         """
         if self.compute_hessian_param_avg:
             # Compute hessian at the averaged parameter for stability
-            hessian = self.obj_function.hessian(data, self.param)
+            hessian = self.obj_function.hessian(data, self.param, return_grad=False)
             # Compute gradient at the non-averaged parameter for the update step
             grad = self.obj_function.grad(data, self.param_not_avg)
         else:

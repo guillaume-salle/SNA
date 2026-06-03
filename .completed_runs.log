@@ -1,12 +1,12 @@
 linear_random_d-1000_N-1e5:
-    Stream_SGD_8d3da59a_0,f26m6293,/home/gs/SNA/wandb/run-20251021_174734-f26m6293/files
-    Stream_SGD_Avg_db4bb7da_0,0kke44up,/home/gs/SNA/wandb/offline-run-20251021_090046-0kke44up/files
-    Stream_mSNA_7b6a97c2_0,qnc6u5nc,/home/gs/SNA/wandb/run-20251021_174751-qnc6u5nc/files
-    Stream_mSNA_Avg_a770517c_0,4gbgy86t,/home/gs/SNA/wandb/offline-run-20251021_090052-4gbgy86t/files
-    Stream_mSNA_Avg_ell-0_25_576c1585_0,ygqnkvs6,/home/gs/SNA/wandb/offline-run-20251021_090057-ygqnkvs6/files
-    Stream_mSNA_Avg_ell-0_5_f9f7e108_0,b55vxs93,/home/gs/SNA/wandb/offline-run-20251021_090102-b55vxs93/files
-    Stream_mSNA_ell-0_25_00c3f946_0,j7iliiyf,/home/gs/SNA/wandb/offline-run-20251021_090108-j7iliiyf/files
-    Stream_mSNA_ell-0_5_0e00f625_0,p2alkndt,/home/gs/SNA/wandb/offline-run-20251021_090113-p2alkndt/files
+    Stream_SGD_8d3da59a_0,zsbgy029,/home/gs/SNA/wandb/offline-run-20260603_074211-zsbgy029/files
+    Stream_SGD_Avg_db4bb7da_0,tnj66j7m,/home/gs/SNA/wandb/offline-run-20260603_074210-tnj66j7m/files
+    Stream_mSNA_7b6a97c2_0,o5zhlehe,/home/gs/SNA/wandb/offline-run-20260603_074205-o5zhlehe/files
+    Stream_mSNA_Avg_a770517c_0,893d1x9x,/home/gs/SNA/wandb/offline-run-20260603_074150-893d1x9x/files
+    Stream_mSNA_Avg_ell-0_25_576c1585_0,vk3hgdjj,/home/gs/SNA/wandb/offline-run-20260603_074139-vk3hgdjj/files
+    Stream_mSNA_Avg_ell-0_5_f9f7e108_0,criy7gr6,/home/gs/SNA/wandb/offline-run-20260603_074145-criy7gr6/files
+    Stream_mSNA_ell-0_25_00c3f946_0,ergp31h0,/home/gs/SNA/wandb/offline-run-20260603_074155-ergp31h0/files
+    Stream_mSNA_ell-0_5_0e00f625_0,vtu2gc28,/home/gs/SNA/wandb/offline-run-20260603_074200-vtu2gc28/files
 logistic_random_d-1000_N-1e5:
     Stream_SGD_d0964701_0,gqhs8wjn,/home/gs/SNA/wandb/offline-run-20251021_090118-gqhs8wjn/files
     Stream_SGD_Avg_b127942f_0,nceskzc3,/home/gs/SNA/wandb/offline-run-20251021_090133-nceskzc3/files

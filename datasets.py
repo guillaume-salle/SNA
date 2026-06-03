@@ -109,6 +109,7 @@ class RegressionIterableDataset(IterableDataset):
             X_batch_gen: torch.Tensor
             if self.feature_dim > 0:
                 if self.cholesky_L is not None:
+                    assert self.mean_features is not None
                     # Manual sampling: z ~ N(0, I), then X = mean + z @ L.T
                     z = torch.randn(
                         current_actual_batch_size,
@@ -493,8 +494,8 @@ def _fetch_and_process_openml(dataset_name: str, verbose: bool = False) -> Tuple
         if verbose:
             print("  Info: Dataset loaded as a pandas DataFrame.")
         # Identify categorical features to one-hot encode them
-        categorical_cols = X.select_dtypes(include=["category", "object"]).columns
-        if not categorical_cols.empty:
+        categorical_cols = list(X.select_dtypes(include=["category", "object"]).columns)
+        if categorical_cols:
             X = pd.get_dummies(X, columns=categorical_cols, drop_first=True)
         # Convert any remaining non-numeric columns (like bools) to int
         for col in X.columns:
@@ -578,6 +579,9 @@ def _fetch_and_process_covtype(verbose: bool = False) -> Tuple[np.ndarray, np.nd
     if verbose:
         print("Fetching raw data for covtype from sklearn...")
     X, y = fetch_covtype(return_X_y=True)
+    # Coerce to numpy arrays (type checkers may treat these as ArrayLike).
+    X = np.asarray(X)
+    y = np.asarray(y)
     # Convert to binary classification: class 2 (Lodgepole Pine) vs all others.
     y_binary = (y == 2).astype(np.float32)
     X_np = X.astype(np.float32)

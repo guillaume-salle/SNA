@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
+from typing import Literal, Tuple, Union, overload
+
 import torch
-from typing import Tuple, Union
 import torch.nn.functional as F
+
+Data = torch.Tensor | Tuple[torch.Tensor, torch.Tensor]
 
 
 class BaseObjectiveFunction(ABC):
@@ -9,32 +12,63 @@ class BaseObjectiveFunction(ABC):
     Abstract base class for different objective functions using PyTorch.
     """
 
+    # Attributes used by shared helpers (e.g. _add_bias).
+    # Subclasses typically override these in __init__.
+    bias: bool = False
+    name: str = ""
+
     @abstractmethod
-    def __call__(self, data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor) -> torch.Tensor:
+    def __call__(self, data: Data, param: torch.Tensor) -> torch.Tensor:
         """Compute the objective function value."""
         raise NotImplementedError
 
     @abstractmethod
-    def get_param_dim(self, data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor]) -> int:
+    def get_param_dim(self, data: Data) -> int:
         """Return the dimension of the parameter vector."""
         raise NotImplementedError
 
     @abstractmethod
-    def grad(self, data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor) -> torch.Tensor:
+    def grad(self, data: Data, param: torch.Tensor) -> torch.Tensor:
         """Compute the gradient of the objective function."""
         raise NotImplementedError
 
+    @overload
+    def hessian(self, data: Data, param: torch.Tensor, return_grad: Literal[False] = False) -> torch.Tensor: ...
+
+    @overload
+    def hessian(
+        self, data: Data, param: torch.Tensor, return_grad: Literal[True]
+    ) -> Tuple[torch.Tensor, torch.Tensor]: ...
+
     @abstractmethod
     def hessian(
-        self, data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor], param: torch.Tensor, return_grad: bool = False
+        self, data: Data, param: torch.Tensor, return_grad: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Compute the Hessian of the objective function. Optionally returns the gradient as well."""
         raise NotImplementedError
 
+    @overload
+    def hessian_column(
+        self,
+        data: Data,
+        param: torch.Tensor,
+        columns: torch.Tensor,
+        return_grad: Literal[False] = False,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def hessian_column(
+        self,
+        data: Data,
+        param: torch.Tensor,
+        columns: torch.Tensor,
+        return_grad: Literal[True],
+    ) -> Tuple[torch.Tensor, torch.Tensor]: ...
+
     @abstractmethod
     def hessian_column(
         self,
-        data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
+        data: Data,
         param: torch.Tensor,
         columns: torch.Tensor,
         return_grad: bool = False,
@@ -42,10 +76,28 @@ class BaseObjectiveFunction(ABC):
         """Compute specific column(s) of the Hessian. Optionally returns the gradient as well. Assumes columns is a 1D LongTensor."""
         raise NotImplementedError
 
+    @overload
+    def hessian_vector(
+        self,
+        data: Data,
+        param: torch.Tensor,
+        vector: torch.Tensor,
+        return_grad: Literal[False] = False,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def hessian_vector(
+        self,
+        data: Data,
+        param: torch.Tensor,
+        vector: torch.Tensor,
+        return_grad: Literal[True],
+    ) -> Tuple[torch.Tensor, torch.Tensor]: ...
+
     @abstractmethod
     def hessian_vector(
         self,
-        data: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
+        data: Data,
         param: torch.Tensor,
         vector: torch.Tensor,
         return_grad: bool = False,
@@ -180,16 +232,35 @@ class LinearRegression(BaseObjectiveFunction):
             return hessian_vector_product, grad
         return hessian_vector_product
 
+    @overload
     def sherman_morrison(
         self,
         data: Tuple[torch.Tensor, torch.Tensor],
         param: torch.Tensor,
-        n_iter: int = None,
+        n_iter: int | None = None,
+        return_grad: Literal[False] = False,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def sherman_morrison(
+        self,
+        data: Tuple[torch.Tensor, torch.Tensor],
+        param: torch.Tensor,
+        n_iter: int | None = None,
+        return_grad: Literal[True] = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor]: ...
+
+    def sherman_morrison(
+        self,
+        data: Tuple[torch.Tensor, torch.Tensor],
+        param: torch.Tensor,
+        n_iter: int | None = None,
         return_grad: bool = False,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Compute the Sherman-Morrison term (feature vector phi), works only for a batch size of 1. Assumes batched input.
         """
+        _ = n_iter  # kept for API compatibility; not used in this objective
         X, y = data
         # Ensure batch size is 1, assuming X already has batch dimension
         if X.size(0) != 1:
