@@ -112,7 +112,7 @@ def main():
 
         # 2. Determine context variables (d and n) based on dataset type.
         context: dict[str, Any]
-        if "synthetic" in p_name:
+        if "synthetic" in raw_p_config.get("dataset", ""):
             param_dim = dataset_params.get("param_dim")
             if param_dim is None:
                 if "true_theta" in dataset_params:

@@ -24,7 +24,7 @@ from datasets import load_dataset_from_source
 
 def expand_file_patterns(patterns: List[str]) -> List[str]:
     """
-    Expands a list of glob patterns into a list of unique, sorted file paths.
+    Expands a list of glob patterns into a list of unique file paths, preserving order.
     """
     files = []
     for pattern in patterns:
@@ -32,8 +32,8 @@ def expand_file_patterns(patterns: List[str]) -> List[str]:
         if not expanded_files:
             print(f"Warning: The pattern '{pattern}' did not match any files.")
         files.extend(expanded_files)
-    # Return a sorted list of unique file paths
-    return sorted(list(set(files)))
+    # Return a list of unique file paths in the order they were expanded
+    return list(dict.fromkeys(files))
 
 
 # ============================================================================ #

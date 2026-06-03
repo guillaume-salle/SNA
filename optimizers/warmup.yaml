@@ -1,0 +1,4 @@
+inherits_from: SGD_base.yaml
+optimizer_params:
+  lr_const: 2.0
+  batch_size: "expr: d"
